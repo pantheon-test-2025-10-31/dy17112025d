@@ -19,6 +19,9 @@ export default function Home() {
           <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
             This site has been created using the create-next script.          
           </p>
+          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
+           adding this new line        
+          </p>
         </div>
         <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
           <a
