@@ -27,7 +27,7 @@ export default function Home() {
             target="_blank"
             rel="noopener noreferrer"
           >
-            Documentation
+            Documentation and stuff
           </a>
         </div>
       </main>
