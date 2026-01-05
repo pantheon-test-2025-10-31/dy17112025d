@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import path from "path";
 
 const nextConfig: NextConfig = {
   // logging: {
@@ -7,6 +8,8 @@ const nextConfig: NextConfig = {
   //     hmrRefreshes: true,
   //   },
   // },
+  // Use custom TypeScript cache handler for testing
+  cacheHandler: path.resolve('./cache-handler.ts'),
   headers: async () => {
     return [
       {

@@ -115,6 +115,9 @@ export default function CacheTestPage() {
     setIsTestingAll(false);
   };
 
+  const [cacheStats, setCacheStats] = useState<any>(null);
+  const [isLoadingStats, setIsLoadingStats] = useState(false);
+
   const revalidateCache = async (tag: string) => {
     try {
       const response = await fetch(`/api/revalidate?tag=${tag}`);
@@ -122,11 +125,42 @@ export default function CacheTestPage() {
 
       if (response.ok) {
         alert(`Cache tag '${tag}' revalidated successfully!`);
+        // Refresh cache stats after revalidation
+        fetchCacheStats();
       } else {
         alert(`Error: ${result.error}`);
       }
     } catch (error) {
       alert(`Error revalidating cache: ${error}`);
+    }
+  };
+
+  const fetchCacheStats = async () => {
+    setIsLoadingStats(true);
+    try {
+      const response = await fetch('/api/cache-stats');
+      const data = await response.json();
+      setCacheStats(data);
+    } catch (error) {
+      console.error('Error fetching cache stats:', error);
+    } finally {
+      setIsLoadingStats(false);
+    }
+  };
+
+  const clearCache = async () => {
+    try {
+      const response = await fetch('/api/cache-stats', { method: 'DELETE' });
+      const result = await response.json();
+
+      if (response.ok) {
+        alert('Cache cleared successfully!');
+        fetchCacheStats();
+      } else {
+        alert(`Error clearing cache: ${result.error}`);
+      }
+    } catch (error) {
+      alert(`Error clearing cache: ${error}`);
     }
   };
 
@@ -353,6 +387,102 @@ export default function CacheTestPage() {
                 <li>• Click cache tags to test on-demand revalidation</li>
               </ul>
             </div>
+          </section>
+
+          {/* Custom Cache Handler Stats */}
+          <section className="bg-gradient-to-r from-purple-50 to-indigo-50 dark:from-purple-900/20 dark:to-indigo-900/20 rounded-lg border border-purple-200 dark:border-purple-700 p-8">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100">
+                Custom Cache Handler Stats
+              </h2>
+              <div className="flex gap-3">
+                <button
+                  onClick={fetchCacheStats}
+                  disabled={isLoadingStats}
+                  className="px-4 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 disabled:bg-purple-300 rounded-md transition-colors"
+                >
+                  {isLoadingStats ? 'Loading...' : 'Refresh Stats'}
+                </button>
+                <button
+                  onClick={clearCache}
+                  className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-md transition-colors"
+                >
+                  Clear Cache
+                </button>
+              </div>
+            </div>
+
+            {cacheStats ? (
+              <div className="space-y-6">
+                <div className="bg-white dark:bg-zinc-800 p-6 rounded-lg border border-purple-200 dark:border-purple-600">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                    <div className="text-center">
+                      <div className="text-3xl font-bold text-purple-600 dark:text-purple-400">
+                        {cacheStats.cache_stats.size}
+                      </div>
+                      <div className="text-sm text-zinc-600 dark:text-zinc-400">
+                        Cache Entries
+                      </div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-3xl font-bold text-green-600 dark:text-green-400">
+                        {cacheStats.cache_stats.entries.length}
+                      </div>
+                      <div className="text-sm text-zinc-600 dark:text-zinc-400">
+                        Cache Keys
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="text-sm text-zinc-600 dark:text-zinc-400 mb-4">
+                    <strong>Handler:</strong> {cacheStats.info.handler_type}
+                  </div>
+
+                  {cacheStats.cache_stats.entries.length > 0 && (
+                    <div>
+                      <h4 className="font-medium text-zinc-900 dark:text-zinc-100 mb-3">
+                        Cache Keys
+                      </h4>
+                      <div className="bg-zinc-100 dark:bg-zinc-700 p-4 rounded-lg">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                          {cacheStats.cache_stats.entries.map((entry: any, index: number) => (
+                            <div key={index} className="font-mono text-xs text-zinc-700 dark:text-zinc-300 bg-white dark:bg-zinc-600 p-2 rounded break-all">
+                              {entry.key}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="bg-purple-100 dark:bg-purple-900/30 p-4 rounded-lg border border-purple-200 dark:border-purple-600">
+                  <h4 className="font-medium text-purple-900 dark:text-purple-100 mb-2">
+                    🔧 Simple Cache Handler Features:
+                  </h4>
+                  <ul className="text-sm text-purple-800 dark:text-purple-200 space-y-1">
+                    <li>• Basic in-memory Map storage</li>
+                    <li>• Standard Next.js cache handler interface</li>
+                    <li>• Simple tag revalidation (clears all cache)</li>
+                    <li>• Console logging for debugging</li>
+                    <li>• Cache size monitoring</li>
+                  </ul>
+                </div>
+              </div>
+            ) : (
+              <div className="text-center py-8">
+                <p className="text-zinc-600 dark:text-zinc-400 mb-4">
+                  Click "Refresh Stats" to view custom cache handler statistics
+                </p>
+                <button
+                  onClick={fetchCacheStats}
+                  disabled={isLoadingStats}
+                  className="px-6 py-3 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 disabled:bg-purple-300 rounded-md transition-colors"
+                >
+                  {isLoadingStats ? 'Loading...' : 'Load Cache Stats'}
+                </button>
+              </div>
+            )}
           </section>
 
           {/* Navigation */}

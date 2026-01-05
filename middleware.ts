@@ -5,23 +5,23 @@ export function middleware(request: NextRequest) {
 
   // Log request information
   console.log('\n🔥 [MIDDLEWARE] Intercepted request:', pathname);
-  console.log('📥 [REQUEST HEADERS]');
+  // console.log('📥 [REQUEST HEADERS]');
 
   // Log all request headers
-  request.headers.forEach((value, key) => {
-    console.log(`   ${key}: ${value}`);
-  });
+  // request.headers.forEach((value, key) => {
+  //   console.log(`   ${key}: ${value}`);
+  // });
 
   // Continue with the request and get the response
   const response = NextResponse.next();
 
   // Log response information
-  console.log('📤 [RESPONSE HEADERS]');
+  // console.log('📤 [RESPONSE HEADERS]');
 
   // Log all response headers
-  response.headers.forEach((value, key) => {
-    console.log(`   ${key}: ${value}`);
-  });
+  // response.headers.forEach((value, key) => {
+  //   console.log(`   ${key}: ${value}`);
+  // });
 
   // Add a custom header to track middleware execution
   response.headers.set('x-middleware-executed', 'true');
