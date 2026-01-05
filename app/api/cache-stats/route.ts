@@ -1,16 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getSharedCacheStats } from '../../../cacheHandler/file-cache-handler';
 
 export async function GET(request: NextRequest) {
   try {
-    // Import the shared cache directly instead of creating a new instance
-    const { cache } = require('../../../cache-handler.ts');
+    // Access the shared file-based cache directly
+    const stats = await getSharedCacheStats();
 
-    const stats = {
-      size: cache.size,
-      keys: Array.from(cache.keys())
-    };
-
-    console.log(`[API] Cache stats - Size: ${cache.size}, Keys:`, stats.keys);
+    console.log(`[API] Cache stats - Size: ${stats.size}, Keys:`, stats.keys);
 
     return NextResponse.json({
       message: 'Simple cache handler statistics',
@@ -20,8 +16,8 @@ export async function GET(request: NextRequest) {
         entries: stats.keys.map((key: string) => ({ key }))
       },
       info: {
-        handler_type: 'Simple Map-based Cache Handler',
-        description: 'Basic cache handler following Next.js 15 documentation'
+        handler_type: 'File-based Cache Handler',
+        description: 'JSON file-based cache handler for persistent storage across Next.js instances'
       }
     });
 
@@ -38,11 +34,9 @@ export async function GET(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   try {
-    // Access the shared cache directly
-    const { cache } = require('../../../cache-handler.ts');
-
-    const sizeBefore = cache.size;
-    cache.clear();
+    // Access the shared file-based cache directly
+    const { clearSharedCache } = await import('../../../cacheHandler/file-cache-handler');
+    const sizeBefore = await clearSharedCache();
 
     console.log(`[API] Cache cleared - removed ${sizeBefore} entries`);
 

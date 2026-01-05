@@ -8,8 +8,8 @@ const nextConfig: NextConfig = {
   //     hmrRefreshes: true,
   //   },
   // },
-  // Use custom TypeScript cache handler for testing
-  cacheHandler: path.resolve('./cache-handler.ts'),
+  // Use custom file-based cache handler for testing
+  cacheHandler: path.resolve('./cacheHandler/file-cache-handler.ts'),
   headers: async () => {
     return [
       {
