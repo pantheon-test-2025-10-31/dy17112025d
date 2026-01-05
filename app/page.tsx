@@ -1,4 +1,5 @@
 import Image from "next/image";
+import Link from "next/link";
 
 export default function Home() {
   return (
@@ -34,15 +35,39 @@ export default function Home() {
             center.
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
+        <div className="flex flex-col gap-3 text-base font-medium sm:grid sm:grid-cols-2 lg:flex lg:flex-row lg:flex-wrap">
+          <Link
+            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] lg:w-[150px]"
+            href="/blogs"
+          >
+            Blogs (ISR)
+          </Link>
+          <Link
+            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] lg:w-[150px]"
+            href="/about"
+          >
+            About (SSR)
+          </Link>
+          <Link
+            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-purple-600/20 px-5 transition-colors hover:border-purple-600 hover:bg-purple-600/10 dark:border-purple-400/20 dark:hover:border-purple-400 dark:hover:bg-purple-400/10 lg:w-[150px] text-purple-600 dark:text-purple-400"
+            href="/ssg-demo"
+          >
+            SSG Demo
+          </Link>
+          <Link
+            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-blue-600/20 px-5 transition-colors hover:border-blue-600 hover:bg-blue-600/10 dark:border-blue-400/20 dark:hover:border-blue-400 dark:hover:bg-blue-400/10 lg:w-[150px] text-blue-600 dark:text-blue-400"
+            href="/cache-test"
+          >
+            Cache Test
+          </Link>
+          <Link
+            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] lg:w-[150px]"
             href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
             target="_blank"
             rel="noopener noreferrer"
           >
-            Documentation and stuff
-          </a>
+            Docs
+          </Link>
         </div>
       </main>
     </div>
