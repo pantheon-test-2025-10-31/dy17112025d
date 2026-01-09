@@ -13,27 +13,25 @@ export default function Home() {
           height={20}
           priority
         />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            This is the updated title with an upstream update. This is a new new update.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates. This should cause a conflict
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+        <div className="flex flex-col items-center gap-2 text-center sm:items-start sm:text-left">
+          <p>Let's test out nextjs cache handler in all possible scenarios.</p>
+          <div className="my-4">
+            <h2>GCS Cache Information</h2>
+            <ul>
+              <li>
+                <strong>Bucket:</strong>{" "}
+                {process.env.GCS_CACHE_BUCKET || "test-cache-bucket"}
+              </li>
+              <li>
+                <strong>Project:</strong>{" "}
+                {process.env.GOOGLE_CLOUD_PROJECT || "test-project"}
+              </li>
+              <li>
+                <strong>Emulator:</strong>{" "}
+                {process.env.STORAGE_EMULATOR_HOST || "Not set"}
+              </li>
+            </ul>
+          </div>
         </div>
         <div className="flex flex-col gap-3 text-base font-medium sm:grid sm:grid-cols-2 lg:flex lg:flex-row lg:flex-wrap">
           <Link
