@@ -1,17 +1,28 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { promisify } from 'util';
-import type { CacheContext, CacheData, CacheStats } from './types';
+import type {
+  CacheData,
+  CacheStats,
+  FileSystemCacheContext,
+  CacheHandlerParametersGet,
+  CacheHandlerParametersSet,
+  CacheHandlerParametersRevalidateTag,
+  CacheHandlerValue,
+  Revalidate,
+} from './types';
+
+import type { CacheHandler as NextCacheHandler } from './types';
 
 const writeFile = promisify(fs.writeFile);
 const readFile = promisify(fs.readFile);
 const mkdir = promisify(fs.mkdir);
 
-export default class FileCacheHandler {
+export default class FileCacheHandler implements NextCacheHandler {
   private cacheDir: string;
   private cacheFile: string;
 
-  constructor(options: any) {
+  constructor(context: FileSystemCacheContext) {
     console.log('[FileCacheHandler] Initializing file-based cache handler');
 
     // Create cache directory in project root/.next/cache-data
@@ -52,67 +63,91 @@ export default class FileCacheHandler {
     }
   }
 
-  async get(key: string) {
-    console.log(`[FileCacheHandler] GET: ${key}`);
+  async get(
+    cacheKey: CacheHandlerParametersGet[0],
+    ctx?: CacheHandlerParametersGet[1]
+  ): Promise<CacheHandlerValue | null> {
+    console.log(`[FileCacheHandler] GET: ${cacheKey}`);
 
     try {
       const cacheData = await this.readCacheData();
-      const entry = cacheData[key];
+      const entry = cacheData[cacheKey];
 
       if (entry === undefined) {
-        console.log(`[FileCacheHandler] MISS: ${key}`);
+        console.log(`[FileCacheHandler] MISS: ${cacheKey}`);
         return null;
       }
 
-      console.log(`[FileCacheHandler] HIT: ${key}`);
-      // Return the entry as Next.js expects it
+      console.log(`[FileCacheHandler] HIT: ${cacheKey}`, {
+        entryType: typeof entry,
+        hasValue: entry && typeof entry === 'object' && 'value' in entry
+      });
+
+      // Return the stored incrementalCacheValue (the inner value)
+      // Since we're storing: { value: incrementalCacheValue, lastModified, tags }
+      // We need to return just the value part for Next.js
       return entry;
     } catch (error) {
-      console.error(`[FileCacheHandler] Error reading cache for key ${key}:`, error);
+      console.error(`[FileCacheHandler] Error reading cache for key ${cacheKey}:`, error);
       return null;
     }
   }
 
-  async set(key: string, data: any, ctx: CacheContext) {
-    console.log(`[FileCacheHandler] SET: ${key}`, {
-      tags: ctx?.tags,
-      data: data,
-      ctx: ctx
+  async set(
+    cacheKey: CacheHandlerParametersSet[0],
+    incrementalCacheValue: CacheHandlerParametersSet[1],
+    ctx: CacheHandlerParametersSet[2] & {
+      tags?: string[];
+      revalidate?: Revalidate;
+    }
+  ): Promise<void> {
+    console.log(`[FileCacheHandler] SET: ${cacheKey}`, {
+      valueType: typeof incrementalCacheValue,
+      hasKind: incrementalCacheValue && typeof incrementalCacheValue === 'object' && 'kind' in incrementalCacheValue
     });
 
     try {
       const cacheData = await this.readCacheData();
 
-      cacheData[key] = {
-        value: data,
+      const { tags = [] } = ctx;
+
+      const cacheHandlerValue: CacheHandlerValue = {
+        value: incrementalCacheValue,
         lastModified: Date.now(),
-        tags: ctx?.tags || [],
-      };
+        tags: Object.freeze(tags)
+      }
+
+      // Store the incrementalCacheValue exactly as Next.js provides it
+      // Next.js expects to get back exactly what it stored
+      cacheData[cacheKey] = cacheHandlerValue;
 
       await this.writeCacheData(cacheData);
 
       const cacheSize = Object.keys(cacheData).length;
       console.log(`[FileCacheHandler] Cache size: ${cacheSize} entries`);
     } catch (error) {
-      console.error(`[FileCacheHandler] Error setting cache for key ${key}:`, error);
+      console.error(`[FileCacheHandler] Error setting cache for key ${cacheKey}:`, error);
     }
   }
 
-  async revalidateTag(tags: string | string[]) {
-    console.log(`[FileCacheHandler] REVALIDATE TAG: ${tags}`);
+  async revalidateTag(tag: CacheHandlerParametersRevalidateTag[0]): Promise<void> {
+    console.log(`[FileCacheHandler] REVALIDATE TAG: ${tag}`);
 
     try {
-      const tagArray = [tags].flat();
+      const tagArray = [tag].flat();
       const cacheData = await this.readCacheData();
       let deletedCount = 0;
 
       // Iterate over all entries in the cache
       for (const [key, entry] of Object.entries(cacheData)) {
-        // If the entry's tags include the specified tag, delete this entry
-        if (entry.tags && Array.isArray(entry.tags) && entry.tags.some((tag: string) => tagArray.includes(tag))) {
-          delete cacheData[key];
-          deletedCount++;
-          console.log(`[FileCacheHandler] Deleted cache entry: ${key}`);
+        // Check if the entry has tags and matches the revalidation tag
+        // Tags are now part of the Next.js cache value structure
+        if (entry && typeof entry === 'object' && 'tags' in entry && Array.isArray(entry.tags)) {
+          if (entry.tags.some((entryTag: string) => tagArray.includes(entryTag))) {
+            delete cacheData[key];
+            deletedCount++;
+            console.log(`[FileCacheHandler] Deleted cache entry: ${key}`);
+          }
         }
       }
 
@@ -125,6 +160,12 @@ export default class FileCacheHandler {
       console.error('[FileCacheHandler] Error during revalidateTag:', error);
     }
   }
+
+  resetRequestCache(): void {
+    console.log(`[FileCacheHandler] RESET REQUEST CACHE: No-op for file-based cache`);
+    // For file-based cache, this is typically a no-op since we're not maintaining
+    // per-request caches. The file system is the source of truth.
+  }
 }
 
 // Export a shared instance of the cache data access functions for the API
@@ -133,14 +174,17 @@ export async function getSharedCacheStats(): Promise<CacheStats> {
 
   try {
     const data = await readFile(cacheFile, 'utf-8');
-    const cacheData: CacheData = JSON.parse(data);
+    const cacheData = JSON.parse(data);
     const keys = Object.keys(cacheData);
+
+    console.log(`[getSharedCacheStats] Found ${keys.length} cache entries`);
 
     return {
       size: keys.length,
       keys: keys
     };
   } catch (error) {
+    console.log(`[getSharedCacheStats] Cache file not found or invalid:`, error);
     // File doesn't exist or is invalid
     return { size: 0, keys: [] };
   }
@@ -151,13 +195,16 @@ export async function clearSharedCache(): Promise<number> {
 
   try {
     const data = await readFile(cacheFile, 'utf-8');
-    const cacheData: CacheData = JSON.parse(data);
+    const cacheData = JSON.parse(data);
     const sizeBefore = Object.keys(cacheData).length;
+
+    console.log(`[clearSharedCache] Clearing ${sizeBefore} cache entries`);
 
     await writeFile(cacheFile, JSON.stringify({}, null, 2), 'utf-8');
 
     return sizeBefore;
   } catch (error) {
+    console.log(`[clearSharedCache] Cache file not found, nothing to clear:`, error);
     // File doesn't exist, nothing to clear
     return 0;
   }

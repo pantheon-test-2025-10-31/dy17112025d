@@ -461,7 +461,7 @@ export default function CacheTestPage() {
                     🔧 Simple Cache Handler Features:
                   </h4>
                   <ul className="text-sm text-purple-800 dark:text-purple-200 space-y-1">
-                    <li>• Basic in-memory Map storage</li>
+                    <li>• Basic file storage</li>
                     <li>• Standard Next.js cache handler interface</li>
                     <li>• Simple tag revalidation (clears all cache)</li>
                     <li>• Console logging for debugging</li>

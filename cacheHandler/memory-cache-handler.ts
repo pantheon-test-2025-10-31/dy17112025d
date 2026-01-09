@@ -29,7 +29,6 @@ export default class MemoryCacheHandler {
 
   async set(key: string, data: any, ctx: CacheContext) {
     console.log(`[MemoryCacheHandler] SET: ${key}`, {
-      revalidate: ctx?.revalidate,
       tags: ctx?.tags
     });
 

@@ -20,7 +20,7 @@ export interface CacheEntry {
 }
 
 export interface CacheData {
-  [key: string]: CacheEntry;
+  [key: string]: any; // Direct storage of Next.js cache values without wrapper
 }
 
 export interface CacheStats {
@@ -28,7 +28,7 @@ export interface CacheStats {
   keys: string[];
 }
 
-declare class CacheHandler implements NextCacheHandler {
+export declare class CacheHandler implements NextCacheHandler {
   /**
    * Creates a new CacheHandler instance. Constructor is intended for internal use only.
    */
@@ -62,13 +62,6 @@ export type CacheHandlerValue = NextCacheHandlerValue & {
    * Tags associated with the cache entry. They are used for on-demand revalidation.
    */
   tags: Readonly<string[]>;
-  /**
-   * The lifespan parameters for the cache entry.
-   *
-   * Null for pages with `fallback: false` in `getStaticPaths`.
-   * Consider these pages as always fresh and never stale.
-   */
-  lifespan: LifespanParameters | null;
 };
 
 
