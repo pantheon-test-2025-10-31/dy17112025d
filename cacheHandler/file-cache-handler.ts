@@ -419,7 +419,6 @@ export default class FileCacheHandler implements NextCacheHandler {
           for (const file of files) {
             if (!file.endsWith('.json')) continue;
 
-            const filePath = path.join(cacheDir, file);
             const cacheKey = file.replace('.json', '').replace(/_/g, '-'); // Reverse safe key transformation
 
             try {
