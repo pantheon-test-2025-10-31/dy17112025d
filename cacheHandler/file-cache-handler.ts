@@ -22,18 +22,20 @@ const mkdir = promisify(fs.mkdir);
 let buildInvalidationChecked = false;
 
 export default class FileCacheHandler implements NextCacheHandler {
-  private cacheDir: string;
-  private cacheFile: string;
+  private baseDir: string;
+  private fetchCacheDir: string;
+  private routeCacheDir: string;
   private buildMetaFile: string;
 
   constructor(context: FileSystemCacheContext) {
     console.log('[FileCacheHandler] Initializing file-based cache handler');
     console.log('CACHE BUCKET: ', process.env.CACHE_BUCKET || "NOT FOUND", "***")
 
-    // Create cache directory in project root/.next/cache-data
-    this.cacheDir = path.join(process.cwd(), '.next', 'cache-data');
-    this.cacheFile = path.join(this.cacheDir, 'cache.json');
-    this.buildMetaFile = path.join(this.cacheDir, 'build-meta.json');
+    // Create separate cache directories for different cache types
+    this.baseDir = path.join(process.cwd(), '.next', 'cache');
+    this.fetchCacheDir = path.join(this.baseDir, 'fetch-cache');
+    this.routeCacheDir = path.join(this.baseDir, 'route-cache');
+    this.buildMetaFile = path.join(this.baseDir, 'build-meta.json');
 
     // Ensure cache directory exists
     this.ensureCacheDir();
@@ -63,10 +65,14 @@ export default class FileCacheHandler implements NextCacheHandler {
       const currentBuildTime = this.getServerDirModificationTime();
       const buildMeta = await this.readBuildMeta();
 
-      if (buildMeta.timestamp < currentBuildTime) {
+      // Compare only by minute to avoid multiple resets during the same build
+      const currentBuildMinute = Math.floor(currentBuildTime / (60 * 1000));
+      const cachedBuildMinute = Math.floor(buildMeta.timestamp / (60 * 1000));
+
+      if (cachedBuildMinute < currentBuildMinute) {
         console.log(`[FileCacheHandler] New build detected based on server directory modification time.`);
-        console.log(`  Cache timestamp: ${new Date(buildMeta.timestamp).toISOString()}`);
-        console.log(`  Server dir modified: ${new Date(currentBuildTime).toISOString()}`);
+        console.log(`  Cache minute: ${new Date(buildMeta.timestamp).toISOString()}`);
+        console.log(`  Server dir minute: ${new Date(currentBuildTime).toISOString()}`);
 
         // Clear ONLY Full Route Cache (APP_PAGE, APP_ROUTE, PAGES)
         // Preserve Data Cache (FETCH) as per Next.js behavior
@@ -80,9 +86,9 @@ export default class FileCacheHandler implements NextCacheHandler {
 
         console.log('[FileCacheHandler] Full Route Cache invalidated, Data Cache preserved');
       } else {
-        console.log(`[FileCacheHandler] No new build detected - keeping existing cache`);
-        console.log(`  Cache timestamp: ${new Date(buildMeta.timestamp).toISOString()}`);
-        console.log(`  Server dir modified: ${new Date(currentBuildTime).toISOString()}`);
+        console.log(`[FileCacheHandler] Same build minute detected - keeping existing cache`);
+        console.log(`  Cache minute: ${new Date(buildMeta.timestamp).toISOString()}`);
+        console.log(`  Server dir minute: ${new Date(currentBuildTime).toISOString()}`);
       }
     } catch (error) {
       console.log('[FileCacheHandler] No previous build metadata found, starting fresh');
@@ -106,29 +112,31 @@ export default class FileCacheHandler implements NextCacheHandler {
 
   private async invalidateRouteCache(): Promise<void> {
     try {
-      const cacheData = await this.readCacheData();
-      const preserved: CacheData = {};
       let routeEntriesCleared = 0;
       let dataEntriesPreserved = 0;
 
-      // Only clear Full Route Cache entries (APP_PAGE, APP_ROUTE, PAGES)
-      // Preserve Data Cache entries (FETCH)
-      for (const [key, entry] of Object.entries(cacheData)) {
-        if (entry && typeof entry === 'object' && 'value' in entry) {
-          const value = entry.value;
+      // Clear entire route cache directory (preserve fetch cache)
+      try {
+        const files = await fs.promises.readdir(this.routeCacheDir);
+        routeEntriesCleared = files.length;
 
-          // Preserve FETCH cache entries (Data Cache)
-          if (value && typeof value === 'object' && value.kind === 'FETCH') {
-            preserved[key] = entry;
-            dataEntriesPreserved++;
-          } else {
-            // Clear route cache entries (APP_PAGE, APP_ROUTE, PAGES, etc.)
-            routeEntriesCleared++;
-          }
+        // Remove the entire directory and recreate it
+        await fs.promises.rm(this.routeCacheDir, { recursive: true, force: true });
+        await fs.promises.mkdir(this.routeCacheDir, { recursive: true });
+      } catch (error) {
+        // Directory might not exist, that's fine
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          console.warn('[FileCacheHandler] Error clearing route cache:', error);
         }
       }
 
-      await this.writeCacheData(preserved);
+      // Count preserved fetch cache entries
+      try {
+        const fetchFiles = await fs.promises.readdir(this.fetchCacheDir);
+        dataEntriesPreserved = fetchFiles.length;
+      } catch (error) {
+        // Directory might not exist, that's fine
+      }
 
       console.log(`[FileCacheHandler] Route cache invalidation complete:`);
       console.log(`  - ${routeEntriesCleared} route cache entries cleared`);
@@ -140,35 +148,57 @@ export default class FileCacheHandler implements NextCacheHandler {
 
   private async ensureCacheDir(): Promise<void> {
     try {
-      await mkdir(this.cacheDir, { recursive: true });
+      await mkdir(this.fetchCacheDir, { recursive: true });
+      await mkdir(this.routeCacheDir, { recursive: true });
     } catch (error) {
       // Directory might already exist, that's fine
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
-        console.error('[FileCacheHandler] Error creating cache directory:', error);
+        console.error('[FileCacheHandler] Error creating cache directories:', error);
       }
     }
   }
 
-  private async readCacheData(): Promise<CacheData> {
+  private getCacheFilePath(cacheKey: string, cacheType: 'fetch' | 'route'): string {
+    // Create a safe filename from the cache key
+    const safeKey = cacheKey.replace(/[^a-zA-Z0-9-]/g, '_');
+    const dir = cacheType === 'fetch' ? this.fetchCacheDir : this.routeCacheDir;
+    return path.join(dir, `${safeKey}.json`);
+  }
+
+  private async readCacheEntry(cacheKey: string, cacheType: 'fetch' | 'route'): Promise<CacheHandlerValue | null> {
     try {
-      const data = await readFile(this.cacheFile, 'utf-8');
+      const filePath = this.getCacheFilePath(cacheKey, cacheType);
+      const data = await readFile(filePath, 'utf-8');
       const parsedData = JSON.parse(data);
       // Deserialize any Buffer data that was stored as base64
-      return this.deserializeFromStorage(parsedData);
+      return this.deserializeFromStorage({ [cacheKey]: parsedData })[cacheKey] || null;
     } catch (error) {
-      // File doesn't exist or is invalid, return empty cache
-      return {};
+      // File doesn't exist or is invalid
+      return null;
     }
   }
 
-  private async writeCacheData(data: CacheData): Promise<void> {
+  private async writeCacheEntry(cacheKey: string, cacheValue: CacheHandlerValue, cacheType: 'fetch' | 'route'): Promise<void> {
     try {
       await this.ensureCacheDir();
+      const filePath = this.getCacheFilePath(cacheKey, cacheType);
       // Convert Buffers to base64 strings for JSON serialization
-      const serializedData = this.serializeForStorage(data);
-      await writeFile(this.cacheFile, JSON.stringify(serializedData, null, 2), 'utf-8');
+      const serializedData = this.serializeForStorage({ [cacheKey]: cacheValue });
+      await writeFile(filePath, JSON.stringify(serializedData[cacheKey], null, 2), 'utf-8');
     } catch (error) {
-      console.error('[FileCacheHandler] Error writing cache data:', error);
+      console.error(`[FileCacheHandler] Error writing cache entry ${cacheKey}:`, error);
+    }
+  }
+
+  private async deleteCacheEntry(cacheKey: string, cacheType: 'fetch' | 'route'): Promise<void> {
+    try {
+      const filePath = this.getCacheFilePath(cacheKey, cacheType);
+      await fs.promises.unlink(filePath);
+    } catch (error) {
+      // File might not exist, that's fine
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        console.error(`[FileCacheHandler] Error deleting cache entry ${cacheKey}:`, error);
+      }
     }
   }
 
@@ -294,15 +324,16 @@ export default class FileCacheHandler implements NextCacheHandler {
     console.log(`[FileCacheHandler] GET: ${cacheKey}`);
 
     try {
-      const cacheData = await this.readCacheData();
-      const entry = cacheData[cacheKey];
+      // Determine cache type based on context
+      const cacheType = this.determineCacheType(ctx);
+      const entry = await this.readCacheEntry(cacheKey, cacheType);
 
-      if (entry === undefined) {
-        console.log(`[FileCacheHandler] MISS: ${cacheKey}`);
+      if (!entry) {
+        console.log(`[FileCacheHandler] MISS: ${cacheKey} (${cacheType})`);
         return null;
       }
 
-      console.log(`[FileCacheHandler] HIT: ${cacheKey}`, {
+      console.log(`[FileCacheHandler] HIT: ${cacheKey} (${cacheType})`, {
         entryType: typeof entry,
         hasValue: entry && typeof entry === 'object' && 'value' in entry
       });
@@ -314,6 +345,28 @@ export default class FileCacheHandler implements NextCacheHandler {
     }
   }
 
+  private determineCacheType(ctx?: CacheHandlerParametersGet[1]): 'fetch' | 'route' {
+    if (!ctx) {
+      return 'route'; // Default to route cache if no context
+    }
+
+    // Check for fetch cache indicators
+    if ('fetchCache' in ctx && ctx.fetchCache === true) {
+      return 'fetch';
+    }
+
+    if ('fetchUrl' in ctx) {
+      return 'fetch';
+    }
+
+    if ('fetchIdx' in ctx) {
+      return 'fetch';
+    }
+
+    // Default to route cache for page/route caches
+    return 'route';
+  }
+
   async set(
     cacheKey: CacheHandlerParametersSet[0],
     incrementalCacheValue: CacheHandlerParametersSet[1],
@@ -322,14 +375,15 @@ export default class FileCacheHandler implements NextCacheHandler {
       revalidate?: Revalidate;
     }
   ): Promise<void> {
-    console.log(`[FileCacheHandler] SET: ${cacheKey}`, {
+    // Determine cache type based on the value kind
+    const cacheType = incrementalCacheValue && typeof incrementalCacheValue === 'object' && 'kind' in incrementalCacheValue && incrementalCacheValue.kind === 'FETCH' ? 'fetch' : 'route';
+
+    console.log(`[FileCacheHandler] SET: ${cacheKey} (${cacheType})`, {
       valueType: typeof incrementalCacheValue,
       hasKind: incrementalCacheValue && typeof incrementalCacheValue === 'object' && 'kind' in incrementalCacheValue
     });
 
     try {
-      const cacheData = await this.readCacheData();
-
       const { tags = [] } = ctx;
 
       const cacheHandlerValue: CacheHandlerValue = {
@@ -340,12 +394,9 @@ export default class FileCacheHandler implements NextCacheHandler {
 
       // Store the incrementalCacheValue exactly as Next.js provides it
       // Next.js expects to get back exactly what it stored
-      cacheData[cacheKey] = cacheHandlerValue;
+      await this.writeCacheEntry(cacheKey, cacheHandlerValue, cacheType);
 
-      await this.writeCacheData(cacheData);
-
-      const cacheSize = Object.keys(cacheData).length;
-      console.log(`[FileCacheHandler] Cache size: ${cacheSize} entries`);
+      console.log(`[FileCacheHandler] Cached ${cacheKey} in ${cacheType} cache`);
     } catch (error) {
       console.error(`[FileCacheHandler] Error setting cache for key ${cacheKey}:`, error);
     }
@@ -356,24 +407,41 @@ export default class FileCacheHandler implements NextCacheHandler {
 
     try {
       const tagArray = [tag].flat();
-      const cacheData = await this.readCacheData();
       let deletedCount = 0;
 
-      // Iterate over all entries in the cache
-      for (const [key, entry] of Object.entries(cacheData)) {
-        // Check if the entry has tags and matches the revalidation tag
-        // Tags are now part of the Next.js cache value structure
-        if (entry && typeof entry === 'object' && 'tags' in entry && Array.isArray(entry.tags)) {
-          if (entry.tags.some((entryTag: string) => tagArray.includes(entryTag))) {
-            delete cacheData[key];
-            deletedCount++;
-            console.log(`[FileCacheHandler] Deleted cache entry: ${key}`);
+      // Check both cache directories
+      for (const cacheType of ['fetch', 'route'] as const) {
+        const cacheDir = cacheType === 'fetch' ? this.fetchCacheDir : this.routeCacheDir;
+
+        try {
+          const files = await fs.promises.readdir(cacheDir);
+
+          for (const file of files) {
+            if (!file.endsWith('.json')) continue;
+
+            const filePath = path.join(cacheDir, file);
+            const cacheKey = file.replace('.json', '').replace(/_/g, '-'); // Reverse safe key transformation
+
+            try {
+              const entry = await this.readCacheEntry(cacheKey, cacheType);
+
+              if (entry && entry.tags && Array.isArray(entry.tags)) {
+                if (entry.tags.some((entryTag: string) => tagArray.includes(entryTag))) {
+                  await this.deleteCacheEntry(cacheKey, cacheType);
+                  deletedCount++;
+                  console.log(`[FileCacheHandler] Deleted cache entry: ${cacheKey} (${cacheType})`);
+                }
+              }
+            } catch (error) {
+              console.warn(`[FileCacheHandler] Error reading cache file ${file}:`, error);
+            }
+          }
+        } catch (error) {
+          // Directory might not exist, that's fine
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+            console.warn(`[FileCacheHandler] Error reading ${cacheType} cache directory:`, error);
           }
         }
-      }
-
-      if (deletedCount > 0) {
-        await this.writeCacheData(cacheData);
       }
 
       console.log(`[FileCacheHandler] Revalidated ${deletedCount} entries for tags: ${tagArray.join(', ')}`);
@@ -391,42 +459,87 @@ export default class FileCacheHandler implements NextCacheHandler {
 
 // Export a shared instance of the cache data access functions for the API
 export async function getSharedCacheStats(): Promise<CacheStats> {
-  const cacheFile = path.join(process.cwd(), '.next', 'cache-data', 'cache.json');
+  const fetchCacheDir = path.join(process.cwd(), '.next', 'cache', 'fetch-cache');
+  const routeCacheDir = path.join(process.cwd(), '.next', 'cache', 'route-cache');
+
+  const keys: string[] = [];
 
   try {
-    const data = await readFile(cacheFile, 'utf-8');
-    const cacheData = JSON.parse(data);
-    const keys = Object.keys(cacheData);
+    // Count fetch cache files
+    try {
+      const fetchFiles = await fs.promises.readdir(fetchCacheDir);
+      const fetchKeys = fetchFiles
+        .filter(file => file.endsWith('.json'))
+        .map(file => `fetch:${file.replace('.json', '').replace(/_/g, '-')}`);
+      keys.push(...fetchKeys);
+    } catch (error) {
+      // Directory might not exist
+    }
 
-    console.log(`[getSharedCacheStats] Found ${keys.length} cache entries`);
+    // Count route cache files
+    try {
+      const routeFiles = await fs.promises.readdir(routeCacheDir);
+      const routeKeys = routeFiles
+        .filter(file => file.endsWith('.json'))
+        .map(file => `route:${file.replace('.json', '').replace(/_/g, '-')}`);
+      keys.push(...routeKeys);
+    } catch (error) {
+      // Directory might not exist
+    }
+
+    console.log(`[getSharedCacheStats] Found ${keys.length} cache entries (${keys.filter(k => k.startsWith('fetch:')).length} fetch, ${keys.filter(k => k.startsWith('route:')).length} route)`);
 
     return {
       size: keys.length,
       keys: keys
     };
   } catch (error) {
-    console.log(`[getSharedCacheStats] Cache file not found or invalid:`, error);
-    // File doesn't exist or is invalid
+    console.log(`[getSharedCacheStats] Error reading cache directories:`, error);
     return { size: 0, keys: [] };
   }
 }
 
 export async function clearSharedCache(): Promise<number> {
-  const cacheFile = path.join(process.cwd(), '.next', 'cache-data', 'cache.json');
+  const fetchCacheDir = path.join(process.cwd(), '.next', 'cache', 'fetch-cache');
+  const routeCacheDir = path.join(process.cwd(), '.next', 'cache', 'route-cache');
+
+  let sizeBefore = 0;
 
   try {
-    const data = await readFile(cacheFile, 'utf-8');
-    const cacheData = JSON.parse(data);
-    const sizeBefore = Object.keys(cacheData).length;
+    // Clear fetch cache
+    try {
+      const fetchFiles = await fs.promises.readdir(fetchCacheDir);
+      const jsonFiles = fetchFiles.filter(file => file.endsWith('.json'));
+      sizeBefore += jsonFiles.length;
 
-    console.log(`[clearSharedCache] Clearing ${sizeBefore} cache entries`);
+      for (const file of jsonFiles) {
+        await fs.promises.unlink(path.join(fetchCacheDir, file));
+      }
 
-    await writeFile(cacheFile, JSON.stringify({}, null, 2), 'utf-8');
+      console.log(`[clearSharedCache] Cleared ${jsonFiles.length} fetch cache entries`);
+    } catch (error) {
+      // Directory might not exist
+    }
 
+    // Clear route cache
+    try {
+      const routeFiles = await fs.promises.readdir(routeCacheDir);
+      const jsonFiles = routeFiles.filter(file => file.endsWith('.json'));
+      sizeBefore += jsonFiles.length;
+
+      for (const file of jsonFiles) {
+        await fs.promises.unlink(path.join(routeCacheDir, file));
+      }
+
+      console.log(`[clearSharedCache] Cleared ${jsonFiles.length} route cache entries`);
+    } catch (error) {
+      // Directory might not exist
+    }
+
+    console.log(`[clearSharedCache] Total cleared: ${sizeBefore} cache entries`);
     return sizeBefore;
   } catch (error) {
-    console.log(`[clearSharedCache] Cache file not found, nothing to clear:`, error);
-    // File doesn't exist, nothing to clear
+    console.log(`[clearSharedCache] Error clearing cache directories:`, error);
     return 0;
   }
 }
