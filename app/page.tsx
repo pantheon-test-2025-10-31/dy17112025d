@@ -20,7 +20,7 @@ export default function Home() {
             <ul>
               <li>
                 <strong>Bucket:</strong>{" "}
-                {process.env.GCS_CACHE_BUCKET || "test-cache-bucket"}
+                {process.env.CACHE_BUCKET || "test-cache-bucket"}
               </li>
               <li>
                 <strong>Project:</strong>{" "}
