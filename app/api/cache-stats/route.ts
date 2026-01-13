@@ -19,12 +19,6 @@ export async function GET(request: NextRequest) {
         handler_type: 'File-based Cache Handler',
         description: 'JSON file-based cache handler for persistent storage across Next.js instances'
       }
-    }, {
-      headers: {
-        'Cache-Control': 'private, no-cache, no-store, must-revalidate',
-        'Pragma': 'no-cache',
-        'Expires': '0'
-      }
     });
 
   } catch (error) {
@@ -36,11 +30,6 @@ export async function GET(request: NextRequest) {
       timestamp: new Date().toISOString()
     }, {
       status: 500,
-      headers: {
-        'Cache-Control': 'private, no-cache, no-store, must-revalidate',
-        'Pragma': 'no-cache',
-        'Expires': '0'
-      }
     });
   }
 }
@@ -57,12 +46,6 @@ export async function DELETE(request: NextRequest) {
       message: 'Cache cleared successfully',
       timestamp: new Date().toISOString(),
       cleared_entries: sizeBefore
-    }, {
-      headers: {
-        'Cache-Control': 'private, no-cache, no-store, must-revalidate',
-        'Pragma': 'no-cache',
-        'Expires': '0'
-      }
     });
 
   } catch (error) {
@@ -73,12 +56,7 @@ export async function DELETE(request: NextRequest) {
       message: error instanceof Error ? error.message : 'Unknown error',
       timestamp: new Date().toISOString()
     }, {
-      status: 500,
-      headers: {
-        'Cache-Control': 'private, no-cache, no-store, must-revalidate',
-        'Pragma': 'no-cache',
-        'Expires': '0'
-      }
+      status: 500
     });
   }
 }
