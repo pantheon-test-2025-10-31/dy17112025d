@@ -34,7 +34,14 @@ export async function GET(request: NextRequest) {
       error: 'Failed to retrieve cache statistics',
       message: error instanceof Error ? error.message : 'Unknown error',
       timestamp: new Date().toISOString()
-    }, { status: 500 });
+    }, {
+      status: 500,
+      headers: {
+        'Cache-Control': 'private, no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0'
+      }
+    });
   }
 }
 
@@ -50,6 +57,12 @@ export async function DELETE(request: NextRequest) {
       message: 'Cache cleared successfully',
       timestamp: new Date().toISOString(),
       cleared_entries: sizeBefore
+    }, {
+      headers: {
+        'Cache-Control': 'private, no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0'
+      }
     });
 
   } catch (error) {
@@ -59,6 +72,13 @@ export async function DELETE(request: NextRequest) {
       error: 'Failed to clear cache',
       message: error instanceof Error ? error.message : 'Unknown error',
       timestamp: new Date().toISOString()
-    }, { status: 500 });
+    }, {
+      status: 500,
+      headers: {
+        'Cache-Control': 'private, no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0'
+      }
+    });
   }
 }
