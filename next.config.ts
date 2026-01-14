@@ -8,8 +8,13 @@ const nextConfig: NextConfig = {
   //     hmrRefreshes: true,
   //   },
   // },
-  // Use custom file-based cache handler for testing
-  cacheHandler: path.resolve('./cacheHandler/file-cache-handler.ts'),
+  // Use environment-specific cache handler: file-based for dev, GCS for prod
+  // cacheHandler: path.resolve(
+  //   process.env.NODE_ENV === 'production'
+  //     ? './cacheHandler/gcs-cache-handler.ts'
+  //     : './cacheHandler/file-cache-handler.ts'
+  // ),
+  cacheHandler: path.resolve('./cacheHandler/gcs-cache-handler.ts'),
   cacheMaxMemorySize: 0, // disable default in-memory caching
   headers: async () => {
     return [

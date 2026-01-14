@@ -23,6 +23,35 @@ export interface CacheData {
   [key: string]: any; // Direct storage of Next.js cache values without wrapper
 }
 
+export interface SerializedBuffer {
+  type: 'Buffer';
+  data: string; // base64 encoded buffer data
+}
+
+export interface SerializedMap {
+  type: 'Map';
+  data: Record<string, unknown>;
+}
+
+export type SerializableValue =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | SerializedBuffer
+  | SerializedMap
+  | Record<string, unknown>
+  | unknown[];
+
+export interface SerializedCacheData {
+  [key: string]: {
+    value: SerializableValue;
+    lastModified: number;
+    tags: Readonly<string[]>;
+  };
+}
+
 export interface CacheStats {
   size: number;
   keys: string[];

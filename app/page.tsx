@@ -20,7 +20,9 @@ export default function Home() {
             <ul>
               <li>
                 <strong>Bucket:</strong>{" "}
-                {process.env.CACHE_BUCKET || "test-cache-bucket"}
+                {(process.env.CACHE_BUCKET || "test-cache-bucket").length > 20
+                  ? `${(process.env.CACHE_BUCKET || "test-cache-bucket").substring(0, 20)}...`
+                  : process.env.CACHE_BUCKET || "test-cache-bucket"}
               </li>
               <li>
                 <strong>Project:</strong>{" "}
