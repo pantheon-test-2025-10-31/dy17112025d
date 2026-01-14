@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSharedCacheStats } from '../../../cacheHandler/file-cache-handler';
+import { getSharedCacheStats } from '../../../cacheHandler/gcs-cache-handler';
 
 export async function GET(request: NextRequest) {
   try {
@@ -37,7 +37,7 @@ export async function GET(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   try {
     // Access the shared file-based cache directly
-    const { clearSharedCache } = await import('../../../cacheHandler/file-cache-handler');
+    const { clearSharedCache } = await import('../../../cacheHandler/gcs-cache-handler');
     const sizeBefore = await clearSharedCache();
 
     console.log(`[API] Cache cleared - removed ${sizeBefore} entries`);
