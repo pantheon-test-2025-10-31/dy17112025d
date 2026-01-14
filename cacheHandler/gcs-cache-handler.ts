@@ -1,7 +1,7 @@
 import type {
   CacheData,
   CacheStats,
-  FileSystemCacheContext,
+  CacheEntryInfo,
   CacheHandlerParametersGet,
   CacheHandlerParametersSet,
   CacheHandlerParametersRevalidateTag,
@@ -15,8 +15,9 @@ import type {
 
 import type { CacheHandler as NextCacheHandler } from './types';
 
-import { Bucket, Storage } from '@google-cloud/storage'
-// const { Storage } = require('@google-cloud/storage');
+import { Bucket, Storage } from '@google-cloud/storage';
+import * as fs from 'fs';
+import * as path from 'path';
 
 // Global singleton to track if build invalidation has been checked for this process
 let buildInvalidationChecked = false;
@@ -26,6 +27,8 @@ export default class GcsCacheHandler implements NextCacheHandler {
   private fetchCachePrefix: string;
   private routeCachePrefix: string;
   private buildMetaKey: string;
+  private tagsPrefix: string;
+  private tagsMapKey: string;
 
   constructor(context: any) {
     console.log('[GcsCacheHandler] Initializing GCS-based cache handler');
@@ -45,6 +48,13 @@ export default class GcsCacheHandler implements NextCacheHandler {
     this.fetchCachePrefix = 'fetch-cache/';
     this.routeCachePrefix = 'route-cache/';
     this.buildMetaKey = 'build-meta.json';
+    this.tagsPrefix = 'cache/tags/';
+    this.tagsMapKey = `${this.tagsPrefix}tags.json`;
+
+    // Initialize tags mapping file (don't await to avoid blocking constructor)
+    this.initializeTagsMapping().catch(error => {
+      console.error('[GcsCacheHandler] Failed to initialize tags mapping:', error);
+    });
 
     // Only check build invalidation once per process
     if (!buildInvalidationChecked) {
@@ -53,10 +63,110 @@ export default class GcsCacheHandler implements NextCacheHandler {
     }
   }
 
+  private async initializeTagsMapping(): Promise<void> {
+    try {
+      const file = this.bucket.file(this.tagsMapKey);
+      const [exists] = await file.exists();
+
+      if (!exists) {
+        console.log('[GcsCacheHandler] Creating initial tags mapping file');
+        const emptyTagsMapping = {};
+        await file.save(JSON.stringify(emptyTagsMapping), {
+          metadata: {
+            contentType: 'application/json',
+          },
+        });
+      } else {
+        console.log('[GcsCacheHandler] Tags mapping file already exists');
+      }
+    } catch (error) {
+      console.error('[GcsCacheHandler] Error initializing tags mapping:', error);
+    }
+  }
+
+  private async readTagsMapping(): Promise<Record<string, string[]>> {
+    try {
+      const file = this.bucket.file(this.tagsMapKey);
+      const [exists] = await file.exists();
+
+      if (!exists) {
+        return {};
+      }
+
+      const [data] = await file.download();
+      return JSON.parse(data.toString());
+    } catch (error) {
+      console.warn('[GcsCacheHandler] Error reading tags mapping:', error);
+      return {};
+    }
+  }
+
+  private async writeTagsMapping(tagsMapping: Record<string, string[]>): Promise<void> {
+    try {
+      const file = this.bucket.file(this.tagsMapKey);
+      await file.save(JSON.stringify(tagsMapping, null, 2), {
+        metadata: {
+          contentType: 'application/json',
+        },
+      });
+    } catch (error) {
+      console.error('[GcsCacheHandler] Error writing tags mapping:', error);
+    }
+  }
+
+  private async updateTagsMapping(cacheKey: string, tags: string[], isDelete = false): Promise<void> {
+    try {
+      const tagsMapping = await this.readTagsMapping();
+
+      if (isDelete) {
+        // Remove the cache key from all tag mappings
+        for (const tag of Object.keys(tagsMapping)) {
+          tagsMapping[tag] = tagsMapping[tag].filter(key => key !== cacheKey);
+          // Remove empty tag entries
+          if (tagsMapping[tag].length === 0) {
+            delete tagsMapping[tag];
+          }
+        }
+      } else {
+        // Add the cache key to each tag mapping
+        for (const tag of tags) {
+          if (!tagsMapping[tag]) {
+            tagsMapping[tag] = [];
+          }
+          // Add cache key if not already present
+          if (!tagsMapping[tag].includes(cacheKey)) {
+            tagsMapping[tag].push(cacheKey);
+          }
+        }
+      }
+
+      await this.writeTagsMapping(tagsMapping);
+    } catch (error) {
+      console.error('[GcsCacheHandler] Error updating tags mapping:', error);
+    }
+  }
+
+  private async updateTagsMappingBulkDelete(cacheKeysToDelete: string[]): Promise<void> {
+    try {
+      const tagsMapping = await this.readTagsMapping();
+
+      // Remove all deleted cache keys from all tag mappings
+      for (const tag of Object.keys(tagsMapping)) {
+        tagsMapping[tag] = tagsMapping[tag].filter(key => !cacheKeysToDelete.includes(key));
+        // Remove empty tag entries
+        if (tagsMapping[tag].length === 0) {
+          delete tagsMapping[tag];
+        }
+      }
+
+      await this.writeTagsMapping(tagsMapping);
+    } catch (error) {
+      console.error('[GcsCacheHandler] Error bulk updating tags mapping:', error);
+    }
+  }
+
   private getServerDirModificationTime(): number {
     try {
-      const fs = require('fs');
-      const path = require('path');
       // Check when the .next/server directory was last modified
       // This changes on each build
       const serverDir = path.join(process.cwd(), '.next', 'server');
@@ -415,6 +525,12 @@ export default class GcsCacheHandler implements NextCacheHandler {
       // Next.js expects to get back exactly what it stored
       await this.writeCacheEntry(cacheKey, cacheHandlerValue, cacheType);
 
+      // Update tags mapping if there are tags
+      if (tags.length > 0) {
+        await this.updateTagsMapping(cacheKey, tags);
+        console.log(`[GcsCacheHandler] Updated tags mapping for ${cacheKey} with tags:`, tags);
+      }
+
       console.log(`[GcsCacheHandler] Cached ${cacheKey} in ${cacheType} cache`);
     } catch (error) {
       console.error(`[GcsCacheHandler] Error setting cache for key ${cacheKey}:`, error);
@@ -424,46 +540,70 @@ export default class GcsCacheHandler implements NextCacheHandler {
   async revalidateTag(tag: CacheHandlerParametersRevalidateTag[0]): Promise<void> {
     console.log(`[GcsCacheHandler] REVALIDATE TAG: ${tag}`);
 
+    const tagArray = [tag].flat();
+    let deletedCount = 0;
+    const deletedKeys: string[] = [];
+
+    let tagsMapping;
     try {
-      const tagArray = [tag].flat();
-      let deletedCount = 0;
+      // Read the current tags mapping
+      tagsMapping = await this.readTagsMapping();
+    } catch (error) {
+      console.error('[GcsCacheHandler] Error reading tags mapping during revalidateTag:', error);
+      tagsMapping = {}; // Use empty mapping if we can't read the file
+    }
 
-      // Check both cache types
-      for (const cacheType of ['fetch', 'route'] as const) {
-        const prefix = cacheType === 'fetch' ? this.fetchCachePrefix : this.routeCachePrefix;
+    // Process each tag
+    for (const currentTag of tagArray) {
+      const cacheKeysForTag = tagsMapping[currentTag] || [];
 
-        try {
-          const [files] = await this.bucket.getFiles({ prefix });
-
-          for (const file of files) {
-            if (!file.name.endsWith('.json')) continue;
-
-            const fileName = file.name.replace(prefix, '').replace('.json', '');
-            const cacheKey = fileName.replace(/_/g, '-'); // Reverse safe key transformation
-
-            try {
-              const entry = await this.readCacheEntry(cacheKey, cacheType);
-
-              if (entry && entry.tags && Array.isArray(entry.tags)) {
-                if (entry.tags.some((entryTag: string) => tagArray.includes(entryTag))) {
-                  await this.deleteCacheEntry(cacheKey, cacheType);
-                  deletedCount++;
-                  console.log(`[GcsCacheHandler] Deleted cache entry: ${cacheKey} (${cacheType})`);
-                }
-              }
-            } catch (error) {
-              console.warn(`[GcsCacheHandler] Error reading cache file ${file.name}:`, error);
-            }
-          }
-        } catch (error) {
-          console.warn(`[GcsCacheHandler] Error reading ${cacheType} cache files:`, error);
-        }
+      if (cacheKeysForTag.length === 0) {
+        console.log(`[GcsCacheHandler] No cache entries found for tag: ${currentTag}`);
+        continue;
       }
 
-      console.log(`[GcsCacheHandler] Revalidated ${deletedCount} entries for tags: ${tagArray.join(', ')}`);
-    } catch (error) {
-      console.error('[GcsCacheHandler] Error during revalidateTag:', error);
+      console.log(`[GcsCacheHandler] Found ${cacheKeysForTag.length} cache entries for tag: ${currentTag}`);
+
+      // Delete each cache entry for this tag
+      for (const cacheKey of cacheKeysForTag) {
+        // Determine cache type - we need to check both locations since we don't store the type in the mapping
+        let deleted = false;
+
+        // Try fetch cache first
+        try {
+          await this.deleteCacheEntry(cacheKey, 'fetch');
+          deleted = true;
+          console.log(`[GcsCacheHandler] Deleted fetch cache entry: ${cacheKey}`);
+        } catch (error) {
+          // Entry might not exist in fetch cache, try route cache
+        }
+
+        // Try route cache if not found in fetch cache
+        if (!deleted) {
+          try {
+            await this.deleteCacheEntry(cacheKey, 'route');
+            deleted = true;
+            console.log(`[GcsCacheHandler] Deleted route cache entry: ${cacheKey}`);
+          } catch (error) {
+            console.warn(`[GcsCacheHandler] Cache entry not found in either cache: ${cacheKey}`);
+          }
+        }
+
+        if (deleted) {
+          deletedCount++;
+          deletedKeys.push(cacheKey);
+        }
+      }
     }
+
+    // Update the tags mapping to remove deleted keys
+    if (deletedKeys.length > 0) {
+      await this.updateTagsMappingBulkDelete(deletedKeys);
+      console.log(`[GcsCacheHandler] Updated tags mapping after deleting ${deletedKeys.length} entries`);
+    }
+
+    console.log(`[GcsCacheHandler] Revalidated ${deletedCount} entries for tags: ${tagArray.join(', ')}`);
+
   }
 
   resetRequestCache(): void {
@@ -478,7 +618,7 @@ export async function getSharedCacheStats(): Promise<CacheStats> {
   const bucketName = process.env.CACHE_BUCKET;
   if (!bucketName) {
     console.log('[getSharedCacheStats] CACHE_BUCKET environment variable not found');
-    return { size: 0, keys: [] };
+    return { size: 0, keys: [], entries: [] };
   }
 
   const storage = new Storage();
@@ -488,26 +628,81 @@ export async function getSharedCacheStats(): Promise<CacheStats> {
   const routeCachePrefix = 'route-cache/';
 
   const keys: string[] = [];
+  const entries: CacheEntryInfo[] = [];
 
   try {
-    // Count fetch cache files
+    // Process fetch cache files
     try {
       const [fetchFiles] = await bucket.getFiles({ prefix: fetchCachePrefix });
-      const fetchKeys = fetchFiles
-        .filter(file => file.name.endsWith('.json'))
-        .map(file => `fetch:${file.name.replace(fetchCachePrefix, '').replace('.json', '').replace(/_/g, '-')}`);
-      keys.push(...fetchKeys);
+      const jsonFiles = fetchFiles.filter((file: any) => file.name.endsWith('.json'));
+
+      for (const file of jsonFiles) {
+        try {
+          const cacheKey = file.name.replace(fetchCachePrefix, '').replace('.json', '').replace(/_/g, '-');
+          const displayKey = `fetch:${cacheKey}`;
+          keys.push(displayKey);
+
+          // Read the cache file to extract tags
+          const [data] = await file.download();
+          const cacheData = JSON.parse(data.toString());
+
+          entries.push({
+            key: displayKey,
+            tags: cacheData.tags || [],
+            lastModified: cacheData.lastModified || Date.now(),
+            type: 'fetch'
+          });
+        } catch (fileError) {
+          console.warn(`[getSharedCacheStats] Error reading fetch cache file ${file.name}:`, fileError);
+          // Add entry with empty tags if file can't be read
+          const cacheKey = file.name.replace(fetchCachePrefix, '').replace('.json', '').replace(/_/g, '-');
+          const displayKey = `fetch:${cacheKey}`;
+          keys.push(displayKey);
+          entries.push({
+            key: displayKey,
+            tags: [],
+            type: 'fetch'
+          });
+        }
+      }
     } catch (error) {
       console.warn('[getSharedCacheStats] Error reading fetch cache:', error);
     }
 
-    // Count route cache files
+    // Process route cache files
     try {
       const [routeFiles] = await bucket.getFiles({ prefix: routeCachePrefix });
-      const routeKeys = routeFiles
-        .filter(file => file.name.endsWith('.json'))
-        .map(file => `route:${file.name.replace(routeCachePrefix, '').replace('.json', '').replace(/_/g, '-')}`);
-      keys.push(...routeKeys);
+      const jsonFiles = routeFiles.filter((file: any) => file.name.endsWith('.json'));
+
+      for (const file of jsonFiles) {
+        try {
+          const cacheKey = file.name.replace(routeCachePrefix, '').replace('.json', '').replace(/_/g, '-');
+          const displayKey = `route:${cacheKey}`;
+          keys.push(displayKey);
+
+          // Read the cache file to extract tags
+          const [data] = await file.download();
+          const cacheData = JSON.parse(data.toString());
+
+          entries.push({
+            key: displayKey,
+            tags: cacheData.tags || [],
+            lastModified: cacheData.lastModified || Date.now(),
+            type: 'route'
+          });
+        } catch (fileError) {
+          console.warn(`[getSharedCacheStats] Error reading route cache file ${file.name}:`, fileError);
+          // Add entry with empty tags if file can't be read
+          const cacheKey = file.name.replace(routeCachePrefix, '').replace('.json', '').replace(/_/g, '-');
+          const displayKey = `route:${cacheKey}`;
+          keys.push(displayKey);
+          entries.push({
+            key: displayKey,
+            tags: [],
+            type: 'route'
+          });
+        }
+      }
     } catch (error) {
       console.warn('[getSharedCacheStats] Error reading route cache:', error);
     }
@@ -516,11 +711,12 @@ export async function getSharedCacheStats(): Promise<CacheStats> {
 
     return {
       size: keys.length,
-      keys: keys
+      keys: keys,
+      entries: entries
     };
   } catch (error) {
     console.log(`[getSharedCacheStats] Error reading cache:`, error);
-    return { size: 0, keys: [] };
+    return { size: 0, keys: [], entries: [] };
   }
 }
 
@@ -536,6 +732,7 @@ export async function clearSharedCache(): Promise<number> {
 
   const fetchCachePrefix = 'fetch-cache/';
   const routeCachePrefix = 'route-cache/';
+  const tagsFilePath = 'cache/tags/tags.json';
 
   let sizeBefore = 0;
 
@@ -566,6 +763,18 @@ export async function clearSharedCache(): Promise<number> {
       console.log(`[clearSharedCache] Cleared ${jsonFiles.length} route cache entries`);
     } catch (error) {
       console.warn('[clearSharedCache] Error clearing route cache:', error);
+    }
+
+    // Clear tags mapping
+    try {
+      const tagsFile = bucket.file(tagsFilePath);
+      const [exists] = await tagsFile.exists();
+      if (exists) {
+        await tagsFile.delete();
+        console.log(`[clearSharedCache] Cleared tags mapping file`);
+      }
+    } catch (error) {
+      console.warn('[clearSharedCache] Error clearing tags mapping:', error);
     }
 
     console.log(`[clearSharedCache] Total cleared: ${sizeBefore} cache entries`);

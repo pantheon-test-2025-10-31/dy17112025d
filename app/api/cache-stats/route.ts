@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSharedCacheStats } from '../../../cacheHandler/gcs-cache-handler';
+import { getSharedCacheStats, clearSharedCache } from '../../../cacheHandler/gcs-cache-handler';
 
 export async function GET(request: NextRequest) {
   try {
@@ -13,11 +13,17 @@ export async function GET(request: NextRequest) {
       timestamp: new Date().toISOString(),
       cache_stats: {
         size: stats.size,
-        entries: stats.keys.map((key: string) => ({ key }))
+        entries: stats.entries
       },
       info: {
-        handler_type: 'File-based Cache Handler',
+        handler_type: 'GCS/File-based Cache Handler',
         description: 'JSON file-based cache handler for persistent storage across Next.js instances'
+      }
+    }, {
+      headers: {
+        'Cache-Control': 'private, no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0'
       }
     });
 
@@ -30,6 +36,11 @@ export async function GET(request: NextRequest) {
       timestamp: new Date().toISOString()
     }, {
       status: 500,
+      headers: {
+        'Cache-Control': 'private, no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0'
+      }
     });
   }
 }
@@ -37,7 +48,6 @@ export async function GET(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   try {
     // Access the shared file-based cache directly
-    const { clearSharedCache } = await import('../../../cacheHandler/gcs-cache-handler');
     const sizeBefore = await clearSharedCache();
 
     console.log(`[API] Cache cleared - removed ${sizeBefore} entries`);
@@ -46,6 +56,12 @@ export async function DELETE(request: NextRequest) {
       message: 'Cache cleared successfully',
       timestamp: new Date().toISOString(),
       cleared_entries: sizeBefore
+    }, {
+      headers: {
+        'Cache-Control': 'private, no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0'
+      }
     });
 
   } catch (error) {
@@ -56,7 +72,12 @@ export async function DELETE(request: NextRequest) {
       message: error instanceof Error ? error.message : 'Unknown error',
       timestamp: new Date().toISOString()
     }, {
-      status: 500
+      status: 500,
+      headers: {
+        'Cache-Control': 'private, no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0'
+      }
     });
   }
 }

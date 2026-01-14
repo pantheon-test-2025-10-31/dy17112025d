@@ -52,9 +52,17 @@ export interface SerializedCacheData {
   };
 }
 
+export interface CacheEntryInfo {
+  key: string;
+  tags: string[];
+  lastModified?: number;
+  type: 'fetch' | 'route';
+}
+
 export interface CacheStats {
   size: number;
   keys: string[];
+  entries: CacheEntryInfo[];
 }
 
 export declare class CacheHandler implements NextCacheHandler {

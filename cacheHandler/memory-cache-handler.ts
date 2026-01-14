@@ -64,7 +64,8 @@ export default class MemoryCacheHandler {
     console.log(`[MemoryCacheHandler] Cache keys:`, Array.from(cache.keys()));
     return {
       size: cache.size,
-      keys: Array.from(cache.keys())
+      keys: Array.from(cache.keys()),
+      entries: []
     };
   }
 

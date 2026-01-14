@@ -141,7 +141,7 @@ export async function getBlogPost(slug: string): Promise<BlogPost | null> {
     const postResponse = await fetch(`https://jsonplaceholder.typicode.com/posts/${post.id}`, {
       next: {
         revalidate: 600, // 10 minutes cache for individual posts
-        tags: [`post-${post.id}`]
+        tags: [`post-${post.id}`, 'api-posts']
       }
     });
 

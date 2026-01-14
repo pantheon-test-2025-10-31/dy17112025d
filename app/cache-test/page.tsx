@@ -234,13 +234,54 @@ export default function CacheTestPage() {
                 {cacheStats.cache_stats.entries.length > 0 && (
                   <div>
                     <h4 className="font-medium text-zinc-900 dark:text-zinc-100 mb-3">
-                      Cache Keys
+                      Cache Entries with Tags
                     </h4>
                     <div className="bg-zinc-100 dark:bg-zinc-700 p-4 rounded-lg">
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                        {cacheStats.cache_stats.entries.map((entry: any, index: number) => (
-                          <div key={index} className="font-mono text-xs text-zinc-700 dark:text-zinc-300 bg-white dark:bg-zinc-600 p-2 rounded break-all">
-                            {entry.key}
+                      <div className="space-y-3">
+                        {cacheStats.cache_stats.entries
+                          .sort((a: any, b: any) => {
+                            // Sort by lastModified date, newest first
+                            const dateA = a.lastModified ? new Date(a.lastModified).getTime() : 0;
+                            const dateB = b.lastModified ? new Date(b.lastModified).getTime() : 0;
+                            return dateB - dateA;
+                          })
+                          .map((entry: any, index: number) => (
+                          <div key={index} className="bg-white dark:bg-zinc-600 p-3 rounded-lg border border-zinc-200 dark:border-zinc-500">
+                            <div className="font-mono text-xs text-zinc-700 dark:text-zinc-300 break-all mb-2">
+                              <span className={`inline-block px-2 py-1 rounded text-xs mr-2 ${
+                                entry.type === 'fetch'
+                                  ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300'
+                                  : 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300'
+                              }`}>
+                                {entry.type}
+                              </span>
+                              {entry.key.replace(/^(fetch|route):/, '')}
+                            </div>
+                            {entry.tags && entry.tags.length > 0 && (
+                              <div className="flex flex-wrap gap-1">
+                                <span className="text-xs text-zinc-500 dark:text-zinc-400 mr-1">Tags:</span>
+                                {entry.tags.map((tag: string, tagIndex: number) => (
+                                  <span
+                                    key={tagIndex}
+                                    className="px-2 py-1 text-xs bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 rounded cursor-pointer hover:bg-purple-200 dark:hover:bg-purple-800/50"
+                                    onClick={() => revalidateCache(tag)}
+                                    title={`Click to revalidate '${tag}' cache`}
+                                  >
+                                    {tag} 🔄
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                            {(!entry.tags || entry.tags.length === 0) && (
+                              <div className="text-xs text-zinc-400 dark:text-zinc-500">
+                                No tags
+                              </div>
+                            )}
+                            {entry.lastModified && (
+                              <div className="text-xs text-zinc-400 dark:text-zinc-500 mt-1">
+                                Modified: {new Date(entry.lastModified).toLocaleString()}
+                              </div>
+                            )}
                           </div>
                         ))}
                       </div>
@@ -251,14 +292,16 @@ export default function CacheTestPage() {
 
               <div className="bg-purple-100 dark:bg-purple-900/30 p-4 rounded-lg border border-purple-200 dark:border-purple-600">
                 <h4 className="font-medium text-purple-900 dark:text-purple-100 mb-2">
-                  🔧 Simple Cache Handler Features:
+                  🚀 GCS Cache Handler Features:
                 </h4>
                 <ul className="text-sm text-purple-800 dark:text-purple-200 space-y-1">
-                  <li>• Basic file storage</li>
+                  <li>• Google Cloud Storage for distributed caching</li>
                   <li>• Standard Next.js cache handler interface</li>
-                  <li>• Simple tag revalidation (clears all cache)</li>
+                  <li>• Cache tag visualization and on-demand revalidation</li>
+                  <li>• Fetch vs Route cache type separation</li>
+                  <li>• Build invalidation and cache persistence</li>
                   <li>• Console logging for debugging</li>
-                  <li>• Cache size monitoring</li>
+                  <li>• Detailed cache metadata (tags, timestamps, types)</li>
                 </ul>
               </div>
             </div>
