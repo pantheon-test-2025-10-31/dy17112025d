@@ -18,10 +18,98 @@ import type { CacheHandler as NextCacheHandler } from './types';
 import { Bucket, Storage } from '@google-cloud/storage';
 import * as fs from 'fs';
 import * as path from 'path';
-import EdgeCacheClear, { CacheClearResult } from './edge-cache-clearer';
 
 // Global singleton to track if build invalidation has been checked for this process
 let buildInvalidationChecked = false;
+
+// Edge cache clearer types and class (inlined to avoid module resolution issues)
+interface CacheClearResult {
+  success: boolean;
+  error?: string;
+  statusCode?: number;
+  duration?: number;
+}
+
+class EdgeCacheClear {
+  private proxyUrl: string;
+
+  constructor() {
+    if (!process.env.OUTBOUND_PROXY_ENDPOINT) {
+      throw new Error('OUTBOUND_PROXY_ENDPOINT environment variable is required for GCS cache handler');
+    }
+    this.proxyUrl = `http://${process.env.OUTBOUND_PROXY_ENDPOINT}/rest/v0alpha1/cache`;
+  }
+
+  async nukeCache(): Promise<CacheClearResult> {
+    const startTime = Date.now();
+
+    try {
+      console.log(`[EdgeCacheClear] Attempting to clear edge cache via: ${this.proxyUrl}`);
+
+      // Create AbortController for timeout manually to avoid compatibility issues
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+      const response = await fetch(this.proxyUrl, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      const duration = Date.now() - startTime;
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error');
+        console.error(`[EdgeCacheClear] HTTP Error ${response.status}: ${errorText}`);
+
+        return {
+          success: false,
+          error: `HTTP ${response.status}: ${errorText}`,
+          statusCode: response.status,
+          duration
+        };
+      }
+
+      console.log(`[EdgeCacheClear] Successfully cleared edge cache in ${duration}ms`);
+
+      return {
+        success: true,
+        statusCode: response.status,
+        duration
+      };
+
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+      console.error(`[EdgeCacheClear] Failed to clear edge cache:`, error);
+
+      return {
+        success: false,
+        error: errorMessage,
+        duration
+      };
+    }
+  }
+
+  async nukeCacheInBackground(context: string): Promise<void> {
+    try {
+      const result = await this.nukeCache();
+
+      if (result.success) {
+        console.log(`[EdgeCacheClear] Background clear successful for ${context} (${result.duration}ms)`);
+      } else {
+        console.warn(`[EdgeCacheClear] Background clear failed for ${context}: ${result.error} (${result.duration}ms)`);
+      }
+    } catch (error) {
+      console.error(`[EdgeCacheClear] Background clear error for ${context}:`, error);
+    }
+  }
+}
 
 export default class GcsCacheHandler implements NextCacheHandler {
   private bucket: Bucket;
@@ -549,6 +637,7 @@ export default class GcsCacheHandler implements NextCacheHandler {
 
   /**
    * Safely clear edge cache without blocking main cache operations
+   * Uses background execution with comprehensive error handling
    */
   private async clearEdgeCache(context: string): Promise<void> {
     if (!this.edgeCacheClearer) {
@@ -556,18 +645,8 @@ export default class GcsCacheHandler implements NextCacheHandler {
       return;
     }
 
-    // Don't await this - run in background to avoid blocking cache operations
-    this.edgeCacheClearer.nukeCache()
-      .then((result: CacheClearResult) => {
-        if (result.success) {
-          console.log(`[GcsCacheHandler] Successfully cleared edge cache for ${context} (${result.duration}ms)`);
-        } else {
-          console.warn(`[GcsCacheHandler] Failed to clear edge cache for ${context}: ${result.error} (${result.duration}ms)`);
-        }
-      })
-      .catch((error) => {
-        console.error(`[GcsCacheHandler] Error clearing edge cache for ${context}:`, error);
-      });
+    // Run in background to avoid blocking cache operations
+    this.edgeCacheClearer.nukeCacheInBackground(context);
   }
 
   async revalidateTag(tag: CacheHandlerParametersRevalidateTag[0]): Promise<void> {
@@ -821,18 +900,7 @@ export async function clearSharedCache(): Promise<number> {
     if (sizeBefore > 0) {
       try {
         const edgeCacheClearer = new EdgeCacheClear();
-        // Don't await - run in background to avoid blocking
-        edgeCacheClearer.nukeCache()
-          .then((result: CacheClearResult) => {
-            if (result.success) {
-              console.log(`[clearSharedCache] Successfully cleared edge cache (${result.duration}ms)`);
-            } else {
-              console.warn(`[clearSharedCache] Failed to clear edge cache: ${result.error} (${result.duration}ms)`);
-            }
-          })
-          .catch((error) => {
-            console.error('[clearSharedCache] Error clearing edge cache:', error);
-          });
+        edgeCacheClearer.nukeCacheInBackground('shared cache clear');
       } catch (error) {
         console.warn('[clearSharedCache] Failed to initialize edge cache clearer:', error);
       }
