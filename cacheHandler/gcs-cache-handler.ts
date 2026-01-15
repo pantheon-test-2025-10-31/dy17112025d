@@ -18,6 +18,7 @@ import type { CacheHandler as NextCacheHandler } from './types';
 import { Bucket, Storage } from '@google-cloud/storage';
 import * as fs from 'fs';
 import * as path from 'path';
+import EdgeCacheClear, { CacheClearResult } from './edge-cache-clearer';
 
 // Global singleton to track if build invalidation has been checked for this process
 let buildInvalidationChecked = false;
@@ -29,6 +30,7 @@ export default class GcsCacheHandler implements NextCacheHandler {
   private buildMetaKey: string;
   private tagsPrefix: string;
   private tagsMapKey: string;
+  private edgeCacheClearer: EdgeCacheClear | null;
 
   constructor(context: any) {
     console.log('[GcsCacheHandler] Initializing GCS-based cache handler');
@@ -37,8 +39,6 @@ export default class GcsCacheHandler implements NextCacheHandler {
     if (!bucketName) {
       throw new Error('CACHE_BUCKET environment variable is required for GCS cache handler');
     }
-
-    console.log('CACHE BUCKET:', bucketName);
 
     // Initialize GCS storage
     const storage = new Storage();
@@ -50,6 +50,15 @@ export default class GcsCacheHandler implements NextCacheHandler {
     this.buildMetaKey = 'build-meta.json';
     this.tagsPrefix = 'cache/tags/';
     this.tagsMapKey = `${this.tagsPrefix}tags.json`;
+
+    // Initialize edge cache clearer
+    try {
+      this.edgeCacheClearer = new EdgeCacheClear();
+      console.log('[GcsCacheHandler] Edge cache clearer initialized');
+    } catch (error) {
+      console.warn('[GcsCacheHandler] Failed to initialize edge cache clearer:', error);
+      this.edgeCacheClearer = null;
+    }
 
     // Initialize tags mapping file (don't await to avoid blocking constructor)
     this.initializeTagsMapping().catch(error => {
@@ -453,6 +462,7 @@ export default class GcsCacheHandler implements NextCacheHandler {
     console.log(`[GcsCacheHandler] GET: ${cacheKey}`);
 
     try {
+      // TODO: verify the behavior of stale cache over here. It should be revalidating it?
       // Determine cache type based on context
       const cacheType = this.determineCacheType(ctx);
       const entry = await this.readCacheEntry(cacheKey, cacheType);
@@ -537,11 +547,36 @@ export default class GcsCacheHandler implements NextCacheHandler {
     }
   }
 
+  /**
+   * Safely clear edge cache without blocking main cache operations
+   */
+  private async clearEdgeCache(context: string): Promise<void> {
+    if (!this.edgeCacheClearer) {
+      console.log(`[GcsCacheHandler] Edge cache clearer not configured, skipping edge cache clear for: ${context}`);
+      return;
+    }
+
+    // Don't await this - run in background to avoid blocking cache operations
+    this.edgeCacheClearer.nukeCache()
+      .then((result: CacheClearResult) => {
+        if (result.success) {
+          console.log(`[GcsCacheHandler] Successfully cleared edge cache for ${context} (${result.duration}ms)`);
+        } else {
+          console.warn(`[GcsCacheHandler] Failed to clear edge cache for ${context}: ${result.error} (${result.duration}ms)`);
+        }
+      })
+      .catch((error) => {
+        console.error(`[GcsCacheHandler] Error clearing edge cache for ${context}:`, error);
+      });
+  }
+
   async revalidateTag(tag: CacheHandlerParametersRevalidateTag[0]): Promise<void> {
+    // TODO: check the stale while revalidate behavior for our gcs cache handling. Does Nextjs framework handle that or do we need to integrate that into our cache handler? 
+    //       nextjs15 might not be following stale while revalidate but nextjs16 definitely does. 
+
     console.log(`[GcsCacheHandler] REVALIDATE TAG: ${tag}`);
 
     const tagArray = [tag].flat();
-    let deletedCount = 0;
     const deletedKeys: string[] = [];
 
     let tagsMapping;
@@ -590,7 +625,6 @@ export default class GcsCacheHandler implements NextCacheHandler {
         }
 
         if (deleted) {
-          deletedCount++;
           deletedKeys.push(cacheKey);
         }
       }
@@ -602,8 +636,12 @@ export default class GcsCacheHandler implements NextCacheHandler {
       console.log(`[GcsCacheHandler] Updated tags mapping after deleting ${deletedKeys.length} entries`);
     }
 
-    console.log(`[GcsCacheHandler] Revalidated ${deletedCount} entries for tags: ${tagArray.join(', ')}`);
+    console.log(`[GcsCacheHandler] Revalidated ${deletedKeys.length} entries for tags: ${tagArray.join(', ')}`);
 
+    // Clear edge cache after successful revalidation
+    if (deletedKeys.length > 0) {
+      await this.clearEdgeCache(`tag revalidation: ${tagArray.join(', ')}`);
+    }
   }
 
   resetRequestCache(): void {
@@ -778,6 +816,28 @@ export async function clearSharedCache(): Promise<number> {
     }
 
     console.log(`[clearSharedCache] Total cleared: ${sizeBefore} cache entries`);
+
+    // Clear edge cache if configured and entries were cleared
+    if (sizeBefore > 0) {
+      try {
+        const edgeCacheClearer = new EdgeCacheClear();
+        // Don't await - run in background to avoid blocking
+        edgeCacheClearer.nukeCache()
+          .then((result: CacheClearResult) => {
+            if (result.success) {
+              console.log(`[clearSharedCache] Successfully cleared edge cache (${result.duration}ms)`);
+            } else {
+              console.warn(`[clearSharedCache] Failed to clear edge cache: ${result.error} (${result.duration}ms)`);
+            }
+          })
+          .catch((error) => {
+            console.error('[clearSharedCache] Error clearing edge cache:', error);
+          });
+      } catch (error) {
+        console.warn('[clearSharedCache] Failed to initialize edge cache clearer:', error);
+      }
+    }
+
     return sizeBefore;
   } catch (error) {
     console.log(`[clearSharedCache] Error clearing cache:`, error);
