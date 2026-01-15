@@ -32,8 +32,6 @@ export default class FileCacheHandler implements NextCacheHandler {
 
   constructor(context: FileSystemCacheContext) {
     console.log('[FileCacheHandler] Initializing file-based cache handler');
-    console.log('CACHE BUCKET: ', process.env.CACHE_BUCKET || "NOT FOUND", "***")
-
     // Create separate cache directories for different cache types
     this.baseDir = path.join(process.cwd(), '.next', 'cache');
     this.fetchCacheDir = path.join(this.baseDir, 'fetch-cache');
