@@ -26,7 +26,7 @@ export function middleware(request: NextRequest) {
   // Add a custom header to track middleware execution
   response.headers.set('x-middleware-executed', 'true');
   response.headers.set('x-intercepted-path', pathname);
-  response.headers.set('x-request-timestamp', new Date().toISOString());
+  // response.headers.set('x-request-timestamp', new Date().toISOString());
 
   console.log(`✅ [MIDDLEWARE] Completed for: ${pathname}\n`);
 
