@@ -1,15 +1,18 @@
-import type { NextConfig } from "next";
 import path from "path";
+import { fileURLToPath } from 'url';
 
-const nextConfig: NextConfig = {
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/** @type {import('next').NextConfig} */
+const nextConfig = {
   // logging: {
   //   fetches: {
   //     fullUrl: true,
   //     hmrRefreshes: true,
   //   },
   // },
-  // cacheHandler: path.resolve('./cacheHandler/file-cache-handler.ts'),
-  cacheHandler: path.resolve('./cacheHandler/gcs-cache-handler.ts'),
+  // cacheHandler: path.resolve(__dirname, './cacheHandler/dist/file-cache-handler.js'),
+  cacheHandler: path.resolve(__dirname, './cacheHandler/dist/gcs-cache-handler.js'),
   cacheMaxMemorySize: 0, // disable default in-memory caching
   headers: async () => {
     return [

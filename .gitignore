@@ -40,6 +40,9 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
+# compiled cache handler
+/cacheHandler/dist/
+
 # playwright
 /playwright-report/
 /test-results/
