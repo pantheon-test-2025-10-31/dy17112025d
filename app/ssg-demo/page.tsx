@@ -14,6 +14,7 @@ async function getStaticData() {
   console.log('[SSG] Fetching data at build time...');
 
   const buildTime = new Date().toISOString();
+  const renderTime = buildTime; // In SSG, render time = build time
 
   try {
     // Fetch some data that will be "frozen" at build time
@@ -33,6 +34,7 @@ async function getStaticData() {
       posts,
       user,
       buildTime,
+      renderTime,
       buildTimestamp: Date.now()
     };
   } catch (error) {
@@ -41,6 +43,7 @@ async function getStaticData() {
       posts: [],
       user: null,
       buildTime,
+      renderTime,
       buildTimestamp: Date.now(),
       error: 'Failed to fetch data at build time'
     };
@@ -51,8 +54,7 @@ export default async function SSGDemoPage() {
   // This data will be the same for all users until the next build
   const staticData = await getStaticData();
 
-  // This shows when the page is being rendered (should be same as build time in production)
-  const renderTime = new Date().toISOString();
+  // Use the static render time from build data (no dynamic generation)
 
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-900">
@@ -106,10 +108,10 @@ export default async function SSGDemoPage() {
                 <div className="space-y-2 text-sm">
                   <div>
                     <span className="font-medium text-zinc-700 dark:text-zinc-300">Rendered At:</span>
-                    <div className="font-mono text-zinc-900 dark:text-zinc-100">{renderTime}</div>
+                    <div className="font-mono text-zinc-900 dark:text-zinc-100">{staticData.renderTime}</div>
                   </div>
                   <div className="text-xs text-zinc-500 dark:text-zinc-400 mt-2">
-                    In production, this should match build time
+                    In SSG, this matches build time (static generation)
                   </div>
                 </div>
               </div>
