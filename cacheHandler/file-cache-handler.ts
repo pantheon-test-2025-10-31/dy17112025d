@@ -53,55 +53,71 @@ export default class FileCacheHandler implements NextCacheHandler {
     }
   }
 
-  private getServerDirModificationTime(): number {
+  /**
+   * Gets the Next.js build ID from the build manifest.
+   * This ID is stable and unique per build, unlike file modification times.
+   */
+  private getBuildId(): string {
     try {
-      // Check when the .next/server directory was last modified
-      // This changes on each build
-      const serverDir = path.join(process.cwd(), '.next', 'server');
-      const stats = fs.statSync(serverDir);
-      return stats.mtime.getTime();
+      // Try to read from .next/BUILD_ID first (standard location)
+      const buildIdPath = path.join(process.cwd(), '.next', 'BUILD_ID');
+      if (fs.existsSync(buildIdPath)) {
+        return fs.readFileSync(buildIdPath, 'utf-8').trim();
+      }
+
+      // Fallback: extract build ID from build-manifest.json paths
+      const manifestPath = path.join(process.cwd(), '.next', 'build-manifest.json');
+      if (fs.existsSync(manifestPath)) {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+        // Build ID is in paths like "static/DsOqQ6QE7Bo_OEhUjVFCD/_buildManifest.js"
+        const lowPriorityFiles = manifest.lowPriorityFiles || [];
+        for (const file of lowPriorityFiles) {
+          const match = file.match(/static\/([^/]+)\/_/);
+          if (match) {
+            return match[1];
+          }
+        }
+      }
+
+      console.log('[FileCacheHandler] Could not find build ID, using timestamp fallback');
+      return `fallback-${Date.now()}`;
     } catch (error) {
-      console.log('[FileCacheHandler] Could not get server dir mtime:', error);
-      return Date.now();
+      console.log('[FileCacheHandler] Error reading build ID:', error);
+      return `fallback-${Date.now()}`;
     }
   }
 
   private async checkBuildInvalidation(): Promise<void> {
+    const currentBuildId = this.getBuildId();
+    console.log(`[FileCacheHandler] Current build ID: ${currentBuildId}`);
+
     try {
-      const currentBuildTime = this.getServerDirModificationTime();
       const buildMeta = await this.readBuildMeta();
 
-      // Compare only by minute to avoid multiple resets during the same build
-      const currentBuildMinute = Math.floor(currentBuildTime / (60 * 1000));
-      const cachedBuildMinute = Math.floor(buildMeta.timestamp / (60 * 1000));
-
-      if (cachedBuildMinute < currentBuildMinute) {
-        console.log(`[FileCacheHandler] New build detected based on server directory modification time.`);
-        console.log(`  Cache minute: ${new Date(buildMeta.timestamp).toISOString()}`);
-        console.log(`  Server dir minute: ${new Date(currentBuildTime).toISOString()}`);
+      if (buildMeta.buildId !== currentBuildId) {
+        console.log(`[FileCacheHandler] New build detected.`);
+        console.log(`  Cached build ID: ${buildMeta.buildId}`);
+        console.log(`  Current build ID: ${currentBuildId}`);
 
         // Clear ONLY Full Route Cache (APP_PAGE, APP_ROUTE, PAGES)
         // Preserve Data Cache (FETCH) as per Next.js behavior
         await this.invalidateRouteCache();
 
-        // Update build metadata with current server directory modification time
+        // Update build metadata with current build ID
         await this.writeBuildMeta({
-          buildId: `build-${currentBuildTime}`, // Keep for compatibility but use timestamp as ID
-          timestamp: currentBuildTime
+          buildId: currentBuildId,
+          timestamp: Date.now()
         });
 
         console.log('[FileCacheHandler] Full Route Cache invalidated, Data Cache preserved');
       } else {
-        console.log(`[FileCacheHandler] Same build minute detected - keeping existing cache`);
-        console.log(`  Cache minute: ${new Date(buildMeta.timestamp).toISOString()}`);
-        console.log(`  Server dir minute: ${new Date(currentBuildTime).toISOString()}`);
+        console.log(`[FileCacheHandler] Same build ID detected - keeping existing cache`);
       }
     } catch (error) {
-      console.log('[FileCacheHandler] No previous build metadata found, starting fresh');
-      const currentBuildTime = this.getServerDirModificationTime();
+      console.log('[FileCacheHandler] No previous build metadata found, initializing with current build');
       await this.writeBuildMeta({
-        buildId: `build-${currentBuildTime}`,
-        timestamp: currentBuildTime
+        buildId: currentBuildId,
+        timestamp: Date.now()
       });
     }
   }
