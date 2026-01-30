@@ -35,7 +35,10 @@ async function getStaticData() {
       user,
       buildTime,
       renderTime,
-      buildTimestamp: Date.now()
+      buildTimestamp: new Date().toLocaleString('en-US', {
+        dateStyle: 'medium',
+        timeStyle: 'long'
+      })
     };
   } catch (error) {
     console.error('[SSG] Error fetching build-time data:', error);
@@ -44,7 +47,10 @@ async function getStaticData() {
       user: null,
       buildTime,
       renderTime,
-      buildTimestamp: Date.now(),
+      buildTimestamp: new Date().toLocaleString('en-US', {
+        dateStyle: 'medium',
+        timeStyle: 'long'
+      }),
       error: 'Failed to fetch data at build time'
     };
   }

@@ -121,7 +121,10 @@ export default class GcsCacheHandler implements NextCacheHandler {
   private edgeCacheClearer: EdgeCacheClear | null;
 
   constructor(context: any) {
-    console.log('[GcsCacheHandler] Initializing GCS-based cache handler');
+    // Only log during server runtime, not during build (too noisy with parallel workers)
+    if (process.env.NEXT_PHASE !== 'phase-production-build') {
+      console.log('[GcsCacheHandler] Initializing GCS-based cache handler');
+    }
 
     const bucketName = process.env.CACHE_BUCKET;
     if (!bucketName) {
@@ -142,22 +145,26 @@ export default class GcsCacheHandler implements NextCacheHandler {
     // Initialize edge cache clearer
     try {
       this.edgeCacheClearer = new EdgeCacheClear();
-      console.log('[GcsCacheHandler] Edge cache clearer initialized');
     } catch (error) {
-      console.warn('[GcsCacheHandler] Failed to initialize edge cache clearer:', error);
       this.edgeCacheClearer = null;
     }
 
     // Initialize tags mapping file (don't await to avoid blocking constructor)
-    this.initializeTagsMapping().catch(error => {
-      console.error('[GcsCacheHandler] Failed to initialize tags mapping:', error);
-    });
+    this.initializeTagsMapping().catch(() => {});
 
     // Only check build invalidation once per process
-    if (!buildInvalidationChecked) {
+    // Skip during build phase to avoid race conditions with parallel workers
+    if (!buildInvalidationChecked && !this.isBuildPhase()) {
       this.checkBuildInvalidation();
       buildInvalidationChecked = true;
     }
+  }
+
+  /**
+   * Detect if we're in the build phase (next build) vs runtime (next start)
+   */
+  private isBuildPhase(): boolean {
+    return process.env.NEXT_PHASE === 'phase-production-build';
   }
 
   private async initializeTagsMapping(): Promise<void> {
@@ -166,18 +173,15 @@ export default class GcsCacheHandler implements NextCacheHandler {
       const [exists] = await file.exists();
 
       if (!exists) {
-        console.log('[GcsCacheHandler] Creating initial tags mapping file');
         const emptyTagsMapping = {};
         await file.save(JSON.stringify(emptyTagsMapping), {
           metadata: {
             contentType: 'application/json',
           },
         });
-      } else {
-        console.log('[GcsCacheHandler] Tags mapping file already exists');
       }
     } catch (error) {
-      console.error('[GcsCacheHandler] Error initializing tags mapping:', error);
+      // Silently fail - tags mapping will be created on first write
     }
   }
 
@@ -291,22 +295,18 @@ export default class GcsCacheHandler implements NextCacheHandler {
       console.log('[GcsCacheHandler] Could not find build ID, using timestamp fallback');
       return `fallback-${Date.now()}`;
     } catch (error) {
-      console.log('[GcsCacheHandler] Error reading build ID:', error);
       return `fallback-${Date.now()}`;
     }
   }
 
   private async checkBuildInvalidation(): Promise<void> {
     const currentBuildId = this.getBuildId();
-    console.log(`[GcsCacheHandler] Current build ID: ${currentBuildId}`);
 
     try {
       const buildMeta = await this.readBuildMeta();
 
       if (buildMeta.buildId !== currentBuildId) {
-        console.log(`[GcsCacheHandler] New build detected.`);
-        console.log(`  Cached build ID: ${buildMeta.buildId}`);
-        console.log(`  Current build ID: ${currentBuildId}`);
+        console.log(`[GcsCacheHandler] New build detected (${buildMeta.buildId} -> ${currentBuildId}), invalidating route cache`);
 
         // Clear ONLY Full Route Cache (APP_PAGE, APP_ROUTE, PAGES)
         // Preserve Data Cache (FETCH) as per Next.js behavior
@@ -317,13 +317,9 @@ export default class GcsCacheHandler implements NextCacheHandler {
           buildId: currentBuildId,
           timestamp: Date.now()
         });
-
-        console.log('[GcsCacheHandler] Full Route Cache invalidated, Data Cache preserved');
-      } else {
-        console.log(`[GcsCacheHandler] Same build ID detected - keeping existing cache`);
       }
     } catch (error) {
-      console.log('[GcsCacheHandler] No previous build metadata found, initializing with current build');
+      // No previous build metadata - first run, just save current build ID
       await this.writeBuildMeta({
         buildId: currentBuildId,
         timestamp: Date.now()
@@ -348,34 +344,12 @@ export default class GcsCacheHandler implements NextCacheHandler {
 
   private async invalidateRouteCache(): Promise<void> {
     try {
-      let routeEntriesCleared = 0;
-      let dataEntriesPreserved = 0;
-
       // Clear entire route cache (preserve fetch cache)
-      try {
-        const [files] = await this.bucket.getFiles({ prefix: this.routeCachePrefix });
-        routeEntriesCleared = files.length;
-
-        // Delete all route cache files
-        const deletePromises = files.map(file => file.delete());
-        await Promise.all(deletePromises);
-      } catch (error) {
-        console.warn('[GcsCacheHandler] Error clearing route cache:', error);
-      }
-
-      // Count preserved fetch cache entries
-      try {
-        const [fetchFiles] = await this.bucket.getFiles({ prefix: this.fetchCachePrefix });
-        dataEntriesPreserved = fetchFiles.length;
-      } catch (error) {
-        // Error getting fetch files, that's fine
-      }
-
-      console.log(`[GcsCacheHandler] Route cache invalidation complete:`);
-      console.log(`  - ${routeEntriesCleared} route cache entries cleared`);
-      console.log(`  - ${dataEntriesPreserved} data cache entries preserved`);
+      const [files] = await this.bucket.getFiles({ prefix: this.routeCachePrefix });
+      const deletePromises = files.map(file => file.delete());
+      await Promise.all(deletePromises);
     } catch (error) {
-      console.log('[GcsCacheHandler] Error during route cache invalidation:', error);
+      // Silently fail - cache invalidation is best effort
     }
   }
 
@@ -853,6 +827,41 @@ export async function getSharedCacheStats(): Promise<CacheStats> {
   }
 }
 
+/**
+ * Get static routes from prerender-manifest.json
+ * Static routes have initialRevalidateSeconds: false (never revalidate)
+ * These should not be cleared as they are built during build time
+ */
+function getStaticRoutes(): Set<string> {
+  const staticRoutes = new Set<string>();
+
+  try {
+    const manifestPath = path.join(process.cwd(), '.next', 'prerender-manifest.json');
+    if (!fs.existsSync(manifestPath)) {
+      return staticRoutes;
+    }
+
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+    const routes = manifest.routes || {};
+
+    for (const [route, config] of Object.entries(routes)) {
+      // initialRevalidateSeconds: false means truly static (SSG)
+      // initialRevalidateSeconds: number means ISR (can be cleared)
+      if ((config as any).initialRevalidateSeconds === false) {
+        // Convert route to cache key format (e.g., "/ssg-demo" -> "_ssg-demo")
+        const cacheKey = route === '/' ? '_index' : route.replace(/\//g, '_');
+        staticRoutes.add(cacheKey);
+      }
+    }
+
+    console.log(`[clearSharedCache] Found ${staticRoutes.size} static routes to preserve`);
+  } catch (error) {
+    // If we can't read the manifest, don't preserve any routes
+  }
+
+  return staticRoutes;
+}
+
 export async function clearSharedCache(): Promise<number> {
   const bucketName = process.env.CACHE_BUCKET;
   if (!bucketName) {
@@ -867,33 +876,51 @@ export async function clearSharedCache(): Promise<number> {
   const routeCachePrefix = 'route-cache/';
   const tagsFilePath = 'cache/tags/tags.json';
 
-  let sizeBefore = 0;
+  // Get static routes that should not be cleared
+  const staticRoutes = getStaticRoutes();
+
+  let clearedCount = 0;
+  let preservedCount = 0;
 
   try {
-    // Clear fetch cache
+    // Clear fetch cache (data cache - always clearable)
     try {
       const [fetchFiles] = await bucket.getFiles({ prefix: fetchCachePrefix });
       const jsonFiles = fetchFiles.filter(file => file.name.endsWith('.json'));
-      sizeBefore += jsonFiles.length;
 
       const deletePromises = jsonFiles.map(file => file.delete());
       await Promise.all(deletePromises);
+      clearedCount += jsonFiles.length;
 
       console.log(`[clearSharedCache] Cleared ${jsonFiles.length} fetch cache entries`);
     } catch (error) {
       console.warn('[clearSharedCache] Error clearing fetch cache:', error);
     }
 
-    // Clear route cache
+    // Clear route cache (skip static routes)
     try {
       const [routeFiles] = await bucket.getFiles({ prefix: routeCachePrefix });
       const jsonFiles = routeFiles.filter(file => file.name.endsWith('.json'));
-      sizeBefore += jsonFiles.length;
 
-      const deletePromises = jsonFiles.map(file => file.delete());
+      const filesToDelete: any[] = [];
+      for (const file of jsonFiles) {
+        // Extract cache key from file path (e.g., "route-cache/_ssg-demo.json" -> "_ssg-demo")
+        const cacheKey = file.name.replace(routeCachePrefix, '').replace('.json', '');
+
+        // Check if this is a static route that should be preserved
+        if (staticRoutes.has(cacheKey)) {
+          preservedCount++;
+          continue;
+        }
+
+        filesToDelete.push(file);
+      }
+
+      const deletePromises = filesToDelete.map(file => file.delete());
       await Promise.all(deletePromises);
+      clearedCount += filesToDelete.length;
 
-      console.log(`[clearSharedCache] Cleared ${jsonFiles.length} route cache entries`);
+      console.log(`[clearSharedCache] Route cache: cleared ${filesToDelete.length}, preserved ${preservedCount} static routes`);
     } catch (error) {
       console.warn('[clearSharedCache] Error clearing route cache:', error);
     }
@@ -904,25 +931,24 @@ export async function clearSharedCache(): Promise<number> {
       const [exists] = await tagsFile.exists();
       if (exists) {
         await tagsFile.delete();
-        console.log(`[clearSharedCache] Cleared tags mapping file`);
       }
     } catch (error) {
-      console.warn('[clearSharedCache] Error clearing tags mapping:', error);
+      // Ignore errors
     }
 
-    console.log(`[clearSharedCache] Total cleared: ${sizeBefore} cache entries`);
+    console.log(`[clearSharedCache] Total cleared: ${clearedCount} cache entries`);
 
     // Clear edge cache if configured and entries were cleared
-    if (sizeBefore > 0) {
+    if (clearedCount > 0) {
       try {
         const edgeCacheClearer = new EdgeCacheClear();
         edgeCacheClearer.nukeCacheInBackground('shared cache clear');
       } catch (error) {
-        console.warn('[clearSharedCache] Failed to initialize edge cache clearer:', error);
+        // Silently fail
       }
     }
 
-    return sizeBefore;
+    return clearedCount;
   } catch (error) {
     console.log(`[clearSharedCache] Error clearing cache:`, error);
     return 0;

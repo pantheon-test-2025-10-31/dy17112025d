@@ -29,14 +29,22 @@ export default class FileCacheHandler implements NextCacheHandler {
   private buildMetaFile: string;
   private tagsDir: string;
   private tagsMapFile: string;
+  private readonly context: FileSystemCacheContext;
 
   constructor(context: FileSystemCacheContext) {
-    console.log('[FileCacheHandler] Initializing file-based cache handler');
+    this.context = context;
+
+    // Only log during server runtime, not during build (too noisy with parallel workers)
+    if (process.env.NEXT_PHASE !== 'phase-production-build') {
+      console.log('[FileCacheHandler] Initializing file-based cache handler');
+    }
+
     // Create separate cache directories for different cache types
     this.baseDir = path.join(process.cwd(), '.next', 'cache');
     this.fetchCacheDir = path.join(this.baseDir, 'fetch-cache');
     this.routeCacheDir = path.join(this.baseDir, 'route-cache');
-    this.buildMetaFile = path.join(this.baseDir, 'build-meta.json');
+    // Store build-meta.json outside .next/ to survive Next.js cache clearing during builds
+    this.buildMetaFile = path.join(process.cwd(), '.cache', 'build-meta.json');
     this.tagsDir = path.join(this.baseDir, 'tags');
     this.tagsMapFile = path.join(this.tagsDir, 'tags.json');
 
@@ -47,10 +55,20 @@ export default class FileCacheHandler implements NextCacheHandler {
     this.initializeTagsMapping();
 
     // Only check build invalidation once per process
-    if (!buildInvalidationChecked) {
+    // Skip during build phase to avoid race conditions with parallel workers
+    if (!buildInvalidationChecked && !this.isBuildPhase()) {
       this.checkBuildInvalidation();
       buildInvalidationChecked = true;
     }
+  }
+
+  /**
+   * Detect if we're in the build phase (next build) vs runtime (next start)
+   */
+  private isBuildPhase(): boolean {
+    // During build, NODE_ENV might be 'production' but there's no server running
+    // We can check if certain runtime indicators are missing
+    return process.env.NEXT_PHASE === 'phase-production-build';
   }
 
   /**
@@ -79,25 +97,20 @@ export default class FileCacheHandler implements NextCacheHandler {
         }
       }
 
-      console.log('[FileCacheHandler] Could not find build ID, using timestamp fallback');
       return `fallback-${Date.now()}`;
     } catch (error) {
-      console.log('[FileCacheHandler] Error reading build ID:', error);
       return `fallback-${Date.now()}`;
     }
   }
 
   private async checkBuildInvalidation(): Promise<void> {
     const currentBuildId = this.getBuildId();
-    console.log(`[FileCacheHandler] Current build ID: ${currentBuildId}`);
 
     try {
       const buildMeta = await this.readBuildMeta();
 
       if (buildMeta.buildId !== currentBuildId) {
-        console.log(`[FileCacheHandler] New build detected.`);
-        console.log(`  Cached build ID: ${buildMeta.buildId}`);
-        console.log(`  Current build ID: ${currentBuildId}`);
+        console.log(`[FileCacheHandler] New build detected (${buildMeta.buildId} -> ${currentBuildId}), invalidating route cache`);
 
         // Clear ONLY Full Route Cache (APP_PAGE, APP_ROUTE, PAGES)
         // Preserve Data Cache (FETCH) as per Next.js behavior
@@ -108,13 +121,9 @@ export default class FileCacheHandler implements NextCacheHandler {
           buildId: currentBuildId,
           timestamp: Date.now()
         });
-
-        console.log('[FileCacheHandler] Full Route Cache invalidated, Data Cache preserved');
-      } else {
-        console.log(`[FileCacheHandler] Same build ID detected - keeping existing cache`);
       }
     } catch (error) {
-      console.log('[FileCacheHandler] No previous build metadata found, initializing with current build');
+      // No previous build metadata - first run, just save current build ID
       await this.writeBuildMeta({
         buildId: currentBuildId,
         timestamp: Date.now()
@@ -128,43 +137,23 @@ export default class FileCacheHandler implements NextCacheHandler {
   }
 
   private async writeBuildMeta(meta: { buildId: string; timestamp: number }): Promise<void> {
-    await this.ensureCacheDir();
+    // Ensure .cache directory exists (separate from .next/cache)
+    const buildMetaDir = path.dirname(this.buildMetaFile);
+    await mkdir(buildMetaDir, { recursive: true });
     await writeFile(this.buildMetaFile, JSON.stringify(meta), 'utf-8');
   }
 
   private async invalidateRouteCache(): Promise<void> {
     try {
-      let routeEntriesCleared = 0;
-      let dataEntriesPreserved = 0;
-
       // Clear entire route cache directory (preserve fetch cache)
       try {
-        const files = await fs.promises.readdir(this.routeCacheDir);
-        routeEntriesCleared = files.length;
-
-        // Remove the entire directory and recreate it
         await fs.promises.rm(this.routeCacheDir, { recursive: true, force: true });
         await fs.promises.mkdir(this.routeCacheDir, { recursive: true });
       } catch (error) {
-        // Directory might not exist, that's fine
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-          console.warn('[FileCacheHandler] Error clearing route cache:', error);
-        }
+        // Directory might not exist or can't be created - not critical
       }
-
-      // Count preserved fetch cache entries
-      try {
-        const fetchFiles = await fs.promises.readdir(this.fetchCacheDir);
-        dataEntriesPreserved = fetchFiles.length;
-      } catch (error) {
-        // Directory might not exist, that's fine
-      }
-
-      console.log(`[FileCacheHandler] Route cache invalidation complete:`);
-      console.log(`  - ${routeEntriesCleared} route cache entries cleared`);
-      console.log(`  - ${dataEntriesPreserved} data cache entries preserved`);
     } catch (error) {
-      console.log('[FileCacheHandler] Error during route cache invalidation:', error);
+      // Silently fail - cache invalidation is best effort
     }
   }
 
@@ -184,14 +173,11 @@ export default class FileCacheHandler implements NextCacheHandler {
   private initializeTagsMapping(): void {
     try {
       if (!fs.existsSync(this.tagsMapFile)) {
-        console.log('[FileCacheHandler] Creating initial tags mapping file');
         const emptyTagsMapping = {};
         fs.writeFileSync(this.tagsMapFile, JSON.stringify(emptyTagsMapping, null, 2), 'utf-8');
-      } else {
-        console.log('[FileCacheHandler] Tags mapping file already exists');
       }
     } catch (error) {
-      console.error('[FileCacheHandler] Error initializing tags mapping:', error);
+      // Silently fail - tags mapping will be created on first write
     }
   }
 
@@ -687,22 +673,61 @@ export async function getSharedCacheStats(): Promise<CacheStats> {
   }
 }
 
+/**
+ * Get static routes from prerender-manifest.json
+ * Static routes have initialRevalidateSeconds: false (never revalidate)
+ * These should not be cleared as they are built during build time
+ */
+function getStaticRoutes(): Set<string> {
+  const staticRoutes = new Set<string>();
+
+  try {
+    const manifestPath = path.join(process.cwd(), '.next', 'prerender-manifest.json');
+    if (!fs.existsSync(manifestPath)) {
+      return staticRoutes;
+    }
+
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+    const routes = manifest.routes || {};
+
+    for (const [route, config] of Object.entries(routes)) {
+      // initialRevalidateSeconds: false means truly static (SSG)
+      // initialRevalidateSeconds: number means ISR (can be cleared)
+      if ((config as any).initialRevalidateSeconds === false) {
+        // Convert route to cache key format (e.g., "/ssg-demo" -> "_ssg-demo")
+        const cacheKey = route === '/' ? '_index' : route.replace(/\//g, '_');
+        staticRoutes.add(cacheKey);
+      }
+    }
+
+    console.log(`[clearSharedCache] Found ${staticRoutes.size} static routes to preserve`);
+  } catch (error) {
+    // If we can't read the manifest, don't preserve any routes
+  }
+
+  return staticRoutes;
+}
+
 export async function clearSharedCache(): Promise<number> {
   const fetchCacheDir = path.join(process.cwd(), '.next', 'cache', 'fetch-cache');
   const routeCacheDir = path.join(process.cwd(), '.next', 'cache', 'route-cache');
   const tagsFilePath = path.join(process.cwd(), '.next', 'cache', 'tags', 'tags.json');
 
-  let sizeBefore = 0;
+  // Get static routes that should not be cleared
+  const staticRoutes = getStaticRoutes();
+
+  let clearedCount = 0;
+  let preservedCount = 0;
 
   try {
-    // Clear fetch cache
+    // Clear fetch cache (data cache - always clearable)
     try {
       const fetchFiles = await fs.promises.readdir(fetchCacheDir);
       const jsonFiles = fetchFiles.filter(file => file.endsWith('.json'));
-      sizeBefore += jsonFiles.length;
 
       for (const file of jsonFiles) {
         await fs.promises.unlink(path.join(fetchCacheDir, file));
+        clearedCount++;
       }
 
       console.log(`[clearSharedCache] Cleared ${jsonFiles.length} fetch cache entries`);
@@ -710,17 +735,25 @@ export async function clearSharedCache(): Promise<number> {
       // Directory might not exist
     }
 
-    // Clear route cache
+    // Clear route cache (skip static routes)
     try {
       const routeFiles = await fs.promises.readdir(routeCacheDir);
       const jsonFiles = routeFiles.filter(file => file.endsWith('.json'));
-      sizeBefore += jsonFiles.length;
 
       for (const file of jsonFiles) {
+        const cacheKey = file.replace('.json', '');
+
+        // Check if this is a static route that should be preserved
+        if (staticRoutes.has(cacheKey)) {
+          preservedCount++;
+          continue;
+        }
+
         await fs.promises.unlink(path.join(routeCacheDir, file));
+        clearedCount++;
       }
 
-      console.log(`[clearSharedCache] Cleared ${jsonFiles.length} route cache entries`);
+      console.log(`[clearSharedCache] Route cache: cleared ${jsonFiles.length - preservedCount}, preserved ${preservedCount} static routes`);
     } catch (error) {
       // Directory might not exist
     }
@@ -729,14 +762,13 @@ export async function clearSharedCache(): Promise<number> {
     try {
       if (await fs.promises.access(tagsFilePath).then(() => true).catch(() => false)) {
         await fs.promises.unlink(tagsFilePath);
-        console.log(`[clearSharedCache] Cleared tags mapping file`);
       }
     } catch (error) {
-      console.warn('[clearSharedCache] Error clearing tags mapping:', error);
+      // Ignore errors
     }
 
-    console.log(`[clearSharedCache] Total cleared: ${sizeBefore} cache entries`);
-    return sizeBefore;
+    console.log(`[clearSharedCache] Total cleared: ${clearedCount} cache entries`);
+    return clearedCount;
   } catch (error) {
     console.log(`[clearSharedCache] Error clearing cache directories:`, error);
     return 0;

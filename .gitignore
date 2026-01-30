@@ -43,6 +43,9 @@ next-env.d.ts
 # compiled cache handler
 /cacheHandler/dist/
 
+# local cache metadata
+/.cache/
+
 # playwright
 /playwright-report/
 /test-results/
