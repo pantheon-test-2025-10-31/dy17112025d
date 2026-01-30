@@ -28,29 +28,30 @@ interface CacheClearResult {
   error?: string;
   statusCode?: number;
   duration?: number;
+  paths?: string[];
 }
 
 class EdgeCacheClear {
-  private proxyUrl: string;
+  private baseUrl: string;
 
   constructor() {
     if (!process.env.OUTBOUND_PROXY_ENDPOINT) {
       throw new Error('OUTBOUND_PROXY_ENDPOINT environment variable is required for GCS cache handler');
     }
-    this.proxyUrl = `http://${process.env.OUTBOUND_PROXY_ENDPOINT}/rest/v0alpha1/cache`;
+    this.baseUrl = `http://${process.env.OUTBOUND_PROXY_ENDPOINT}/rest/v0alpha1/cache`;
   }
 
+  /**
+   * Clear the entire edge cache (nuclear option)
+   */
   async nukeCache(): Promise<CacheClearResult> {
     const startTime = Date.now();
 
     try {
-      console.log(`[EdgeCacheClear] Attempting to clear edge cache via: ${this.proxyUrl}`);
-
-      // Create AbortController for timeout manually to avoid compatibility issues
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-      const response = await fetch(this.proxyUrl, {
+      const response = await fetch(this.baseUrl, {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
@@ -59,13 +60,10 @@ class EdgeCacheClear {
       });
 
       clearTimeout(timeoutId);
-
       const duration = Date.now() - startTime;
 
       if (!response.ok) {
         const errorText = await response.text().catch(() => 'Unknown error');
-        console.error(`[EdgeCacheClear] HTTP Error ${response.status}: ${errorText}`);
-
         return {
           success: false,
           error: `HTTP ${response.status}: ${errorText}`,
@@ -74,40 +72,204 @@ class EdgeCacheClear {
         };
       }
 
-      console.log(`[EdgeCacheClear] Successfully cleared edge cache in ${duration}ms`);
+      console.log(`[EdgeCacheClear] Cleared entire edge cache in ${duration}ms`);
+      return { success: true, statusCode: response.status, duration };
+
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      return { success: false, error: errorMessage, duration };
+    }
+  }
+
+  /**
+   * Clear specific paths from the edge cache (granular invalidation)
+   * @param paths Array of paths to clear (e.g., ['/blogs/my-post', '/blogs'])
+   */
+  async clearPaths(paths: string[]): Promise<CacheClearResult> {
+    if (paths.length === 0) {
+      return { success: true, duration: 0, paths: [] };
+    }
+
+    const startTime = Date.now();
+    const results: { path: string; success: boolean }[] = [];
+
+    try {
+      // Clear each path individually
+      // Endpoint format: /cache/paths/{path...}
+      const clearPromises = paths.map(async (routePath) => {
+        try {
+          // Normalize path: ensure it starts with / and remove trailing /
+          const normalizedPath = routePath.startsWith('/') ? routePath : `/${routePath}`;
+          const cleanPath = normalizedPath.replace(/\/$/, '') || '/';
+          // Build URL: /cache/paths/blogs/my-post for path /blogs/my-post
+          const pathSegment = cleanPath === '/' ? '' : cleanPath.substring(1);
+          const url = `${this.baseUrl}/paths/${pathSegment}`;
+
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+          const response = await fetch(url, {
+            method: 'DELETE',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            signal: controller.signal
+          });
+
+          clearTimeout(timeoutId);
+
+          if (response.ok) {
+            results.push({ path: routePath, success: true });
+          } else {
+            console.warn(`[EdgeCacheClear] Failed to clear path ${routePath}: HTTP ${response.status}`);
+            results.push({ path: routePath, success: false });
+          }
+        } catch (error) {
+          console.warn(`[EdgeCacheClear] Error clearing path ${routePath}:`, error);
+          results.push({ path: routePath, success: false });
+        }
+      });
+
+      await Promise.all(clearPromises);
+
+      const duration = Date.now() - startTime;
+      const successCount = results.filter(r => r.success).length;
+      const clearedPaths = results.filter(r => r.success).map(r => r.path);
+
+      console.log(`[EdgeCacheClear] Cleared ${successCount}/${paths.length} paths in ${duration}ms`);
 
       return {
-        success: true,
-        statusCode: response.status,
-        duration
+        success: successCount > 0,
+        duration,
+        paths: clearedPaths
       };
 
     } catch (error) {
       const duration = Date.now() - startTime;
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-
-      console.error(`[EdgeCacheClear] Failed to clear edge cache:`, error);
-
-      return {
-        success: false,
-        error: errorMessage,
-        duration
-      };
+      return { success: false, error: errorMessage, duration, paths: [] };
     }
   }
 
-  async nukeCacheInBackground(context: string): Promise<void> {
-    try {
-      const result = await this.nukeCache();
+  /**
+   * Clear a single path from the edge cache
+   */
+  async clearPath(routePath: string): Promise<CacheClearResult> {
+    return this.clearPaths([routePath]);
+  }
 
+  /**
+   * Clear paths in the background (non-blocking)
+   */
+  async clearPathsInBackground(paths: string[], context: string): Promise<void> {
+    if (paths.length === 0) return;
+
+    // Run in background without awaiting
+    this.clearPaths(paths).then(result => {
       if (result.success) {
-        console.log(`[EdgeCacheClear] Background clear successful for ${context} (${result.duration}ms)`);
+        console.log(`[EdgeCacheClear] Background path clear for ${context}: ${result.paths?.length} paths cleared`);
       } else {
-        console.warn(`[EdgeCacheClear] Background clear failed for ${context}: ${result.error} (${result.duration}ms)`);
+        console.warn(`[EdgeCacheClear] Background path clear failed for ${context}: ${result.error}`);
       }
-    } catch (error) {
-      console.error(`[EdgeCacheClear] Background clear error for ${context}:`, error);
+    }).catch(error => {
+      console.error(`[EdgeCacheClear] Background path clear error for ${context}:`, error);
+    });
+  }
+
+  /**
+   * Clear cache entries by key/tag
+   * @param keys Array of cache keys/tags to clear
+   */
+  async clearKeys(keys: string[]): Promise<CacheClearResult> {
+    if (keys.length === 0) {
+      return { success: true, duration: 0, paths: [] };
     }
+
+    const startTime = Date.now();
+    const results: { key: string; success: boolean }[] = [];
+
+    try {
+      // Clear each key individually
+      // Endpoint format: /cache/keys/{key}
+      const clearPromises = keys.map(async (key) => {
+        try {
+          const url = `${this.baseUrl}/keys/${encodeURIComponent(key)}`;
+
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+          const response = await fetch(url, {
+            method: 'DELETE',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            signal: controller.signal
+          });
+
+          clearTimeout(timeoutId);
+
+          if (response.ok) {
+            results.push({ key, success: true });
+          } else {
+            console.warn(`[EdgeCacheClear] Failed to clear key ${key}: HTTP ${response.status}`);
+            results.push({ key, success: false });
+          }
+        } catch (error) {
+          console.warn(`[EdgeCacheClear] Error clearing key ${key}:`, error);
+          results.push({ key, success: false });
+        }
+      });
+
+      await Promise.all(clearPromises);
+
+      const duration = Date.now() - startTime;
+      const successCount = results.filter(r => r.success).length;
+      const clearedKeys = results.filter(r => r.success).map(r => r.key);
+
+      console.log(`[EdgeCacheClear] Cleared ${successCount}/${keys.length} keys in ${duration}ms`);
+
+      return {
+        success: successCount > 0,
+        duration,
+        paths: clearedKeys
+      };
+
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      return { success: false, error: errorMessage, duration, paths: [] };
+    }
+  }
+
+  /**
+   * Clear keys in the background (non-blocking)
+   */
+  async clearKeysInBackground(keys: string[], context: string): Promise<void> {
+    if (keys.length === 0) return;
+
+    // Run in background without awaiting
+    this.clearKeys(keys).then(result => {
+      if (result.success) {
+        console.log(`[EdgeCacheClear] Background key clear for ${context}: ${result.paths?.length} keys cleared`);
+      } else {
+        console.warn(`[EdgeCacheClear] Background key clear failed for ${context}: ${result.error}`);
+      }
+    }).catch(error => {
+      console.error(`[EdgeCacheClear] Background key clear error for ${context}:`, error);
+    });
+  }
+
+  async nukeCacheInBackground(context: string): Promise<void> {
+    this.nukeCache().then(result => {
+      if (result.success) {
+        console.log(`[EdgeCacheClear] Background nuke successful for ${context} (${result.duration}ms)`);
+      } else {
+        console.warn(`[EdgeCacheClear] Background nuke failed for ${context}: ${result.error}`);
+      }
+    }).catch(error => {
+      console.error(`[EdgeCacheClear] Background nuke error for ${context}:`, error);
+    });
   }
 }
 
@@ -150,7 +312,7 @@ export default class GcsCacheHandler implements NextCacheHandler {
     }
 
     // Initialize tags mapping file (don't await to avoid blocking constructor)
-    this.initializeTagsMapping().catch(() => {});
+    this.initializeTagsMapping().catch(() => { });
 
     // Only check build invalidation once per process
     // Skip during build phase to avoid race conditions with parallel workers
@@ -308,6 +470,7 @@ export default class GcsCacheHandler implements NextCacheHandler {
       if (buildMeta.buildId !== currentBuildId) {
         console.log(`[GcsCacheHandler] New build detected (${buildMeta.buildId} -> ${currentBuildId}), invalidating route cache`);
 
+        // TODO: make this more granular instead of nuking the whole cache
         // Clear ONLY Full Route Cache (APP_PAGE, APP_ROUTE, PAGES)
         // Preserve Data Cache (FETCH) as per Next.js behavior
         await this.invalidateRouteCache();
@@ -348,6 +511,9 @@ export default class GcsCacheHandler implements NextCacheHandler {
       const [files] = await this.bucket.getFiles({ prefix: this.routeCachePrefix });
       const deletePromises = files.map(file => file.delete());
       await Promise.all(deletePromises);
+
+      // Also clear the edge cache since route cache was invalidated
+      await this.clearEdgeCache('route cache invalidation on new build');
     } catch (error) {
       // Silently fail - cache invalidation is best effort
     }
@@ -640,9 +806,6 @@ export default class GcsCacheHandler implements NextCacheHandler {
   }
 
   async revalidateTag(tag: CacheHandlerParametersRevalidateTag[0]): Promise<void> {
-    // TODO: check the stale while revalidate behavior for our gcs cache handling. Does Nextjs framework handle that or do we need to integrate that into our cache handler? 
-    //       nextjs15 might not be following stale while revalidate but nextjs16 definitely does. 
-
     console.log(`[GcsCacheHandler] REVALIDATE TAG: ${tag}`);
 
     const tagArray = [tag].flat();
@@ -708,8 +871,30 @@ export default class GcsCacheHandler implements NextCacheHandler {
     console.log(`[GcsCacheHandler] Revalidated ${deletedKeys.length} entries for tags: ${tagArray.join(', ')}`);
 
     // Clear edge cache after successful revalidation
-    if (deletedKeys.length > 0) {
-      await this.clearEdgeCache(`tag revalidation: ${tagArray.join(', ')}`);
+    if (deletedKeys.length > 0 && this.edgeCacheClearer) {
+      // Clear by tags/keys
+      this.edgeCacheClearer.clearKeysInBackground(tagArray, `tag revalidation: ${tagArray.join(', ')}`);
+
+      // Also clear by route paths for routes that may not have tags (e.g., ISR routes)
+      // Filter out fetch cache keys (UUIDs/hashes) and keep only valid route paths
+      const isValidRoutePath = (key: string): boolean => {
+        // Route paths start with "/" or "_" (underscore-prefixed routes like "_index")
+        return key.startsWith('/') || key.startsWith('_');
+      };
+
+      const routePaths = deletedKeys
+        .filter(isValidRoutePath)
+        .map(key => {
+          // Handle keys that might have been transformed (underscores to slashes)
+          if (key.startsWith('_')) {
+            return key.replace(/_/g, '/');
+          }
+          return key.startsWith('/') ? key : `/${key}`;
+        });
+
+      if (routePaths.length > 0) {
+        this.edgeCacheClearer.clearPathsInBackground(routePaths, `path revalidation: ${routePaths.join(', ')}`);
+      }
     }
   }
 
