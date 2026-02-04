@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSharedCacheStats, clearSharedCache } from 'nextjs-cache-handler-test-dy';
+import { getSharedCacheStats, clearSharedCache } from 'nextjs-cache-handler-test-dy-2';
 
 export async function GET(request: NextRequest) {
   try {
