@@ -37,12 +37,16 @@ export function middleware(request: NextRequest) {
 export const config = {
   matcher: [
     /*
-     * Match all request paths except for the ones starting with:
+     * Match all request paths except for:
      * - _next/static (static files)
      * - _next/image (image optimization files)
      * - favicon.ico (favicon file)
-     * - public files (you can add more extensions here if needed)
+     * - public files (images, etc.)
+     * - Static/ISR pages that should be cached at CDN level:
+     *   - /blogs and /blogs/* (ISR pages)
+     *   - /ssg-demo (SSG page)
+     *   - / (home page - static)
      */
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.png|.*\\.jpg|.*\\.jpeg|.*\\.gif|.*\\.svg).*)',
+    '/((?!_next/static|_next/image|favicon.ico|blogs|ssg-demo|.*\\.png|.*\\.jpg|.*\\.jpeg|.*\\.gif|.*\\.svg).*)',
   ],
 };

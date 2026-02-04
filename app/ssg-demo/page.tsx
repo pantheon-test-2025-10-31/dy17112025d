@@ -18,9 +18,10 @@ async function getStaticData() {
 
   try {
     // Fetch some data that will be "frozen" at build time
+    // In Next.js 15, fetch defaults to no-store, so we must explicitly set cache: 'force-cache'
     const [postsRes, userRes] = await Promise.all([
-      fetch('https://jsonplaceholder.typicode.com/posts?_limit=3'),
-      fetch('https://jsonplaceholder.typicode.com/users/1')
+      fetch('https://jsonplaceholder.typicode.com/posts?_limit=3', { cache: 'force-cache' }),
+      fetch('https://jsonplaceholder.typicode.com/users/1', { cache: 'force-cache' })
     ]);
 
     const [posts, user] = await Promise.all([
